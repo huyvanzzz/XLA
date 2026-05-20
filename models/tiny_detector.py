@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import torch
 from torch import nn
+from torchvision.models import ResNet34_Weights, resnet34
 
 
 class ConvBlock(nn.Module):
@@ -67,29 +68,51 @@ class TinyDetector(nn.Module):
         base_channels: int = 48,
         head_channels: int = 384,
         residual_blocks: dict[str, int] | None = None,
+        backbone: str = "resnet34",
+        pretrained: bool = True,
     ) -> None:
         super().__init__()
         self.num_classes = num_classes
         self.num_anchors = num_anchors
         self.pred_dim = 5 + num_classes
+        self.backbone_name = backbone
         residual_blocks = residual_blocks or {"stage2": 1, "stage3": 3, "stage4": 4}
         c1 = base_channels
         c2 = base_channels * 2
         c3 = base_channels * 4
         c4 = base_channels * 8
 
-        self.backbone = nn.Sequential(
-            ConvBlock(3, c1, stride=2),              # 416 -> 208
-            ConvBlock(c1, c2, stride=2),             # 208 -> 104
-            make_residual_stack(c2, residual_blocks.get("stage2", 1)),
-            ConvBlock(c2, c3, stride=2),             # 104 -> 52
-            make_residual_stack(c3, residual_blocks.get("stage3", 3)),
-            ConvBlock(c3, c4, stride=2),             # 52 -> 26
-            make_residual_stack(c4, residual_blocks.get("stage4", 4)),
-            SPPBlock(c4),
-        )
+        if backbone == "resnet34":
+            weights = ResNet34_Weights.IMAGENET1K_V1 if pretrained else None
+            resnet = resnet34(weights=weights)
+            self.backbone = nn.Sequential(
+                resnet.conv1,   # 416 -> 208
+                resnet.bn1,
+                resnet.relu,
+                resnet.maxpool, # 208 -> 104
+                resnet.layer1,  # 104 -> 104
+                resnet.layer2,  # 104 -> 52
+                resnet.layer3,  # 52 -> 26
+                SPPBlock(256),
+            )
+            backbone_channels = 256
+        elif backbone == "custom":
+            self.backbone = nn.Sequential(
+                ConvBlock(3, c1, stride=2),              # 416 -> 208
+                ConvBlock(c1, c2, stride=2),             # 208 -> 104
+                make_residual_stack(c2, residual_blocks.get("stage2", 1)),
+                ConvBlock(c2, c3, stride=2),             # 104 -> 52
+                make_residual_stack(c3, residual_blocks.get("stage3", 3)),
+                ConvBlock(c3, c4, stride=2),             # 52 -> 26
+                make_residual_stack(c4, residual_blocks.get("stage4", 4)),
+                SPPBlock(c4),
+            )
+            backbone_channels = c4
+        else:
+            raise ValueError(f"Unsupported backbone: {backbone}")
+
         self.head = nn.Sequential(
-            nn.Conv2d(c4, head_channels, kernel_size=3, padding=1, bias=False),
+            nn.Conv2d(backbone_channels, head_channels, kernel_size=3, padding=1, bias=False),
             nn.BatchNorm2d(head_channels),
             nn.SiLU(inplace=True),
             nn.Conv2d(head_channels, head_channels, kernel_size=3, padding=1, bias=False),

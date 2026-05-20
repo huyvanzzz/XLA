@@ -17,6 +17,8 @@ DEFAULT_CONFIG = {
     "warmup_epochs": 3,
     "label_smoothing": 0.03,
     "model": {
+        "backbone": "resnet34",
+        "pretrained": True,
         "base_channels": 48,
         "head_channels": 384,
         "residual_blocks": {
