@@ -102,6 +102,12 @@ def set_backbone_frozen(model: TinyDetector, frozen: bool) -> None:
         parameter.requires_grad_(is_head or not frozen)
 
 
+def set_frozen_feature_extractor_eval(model: TinyDetector) -> None:
+    for name, module in model.named_children():
+        if name not in {"main_heads", "aux_heads"}:
+            module.eval()
+
+
 def run_epoch(
     model: TinyDetector,
     loader: DataLoader,
@@ -118,7 +124,7 @@ def run_epoch(
     training = optimizer is not None
     model.train(training)
     if training and freeze_backbone:
-        model.backbone.eval()
+        set_frozen_feature_extractor_eval(model)
     totals: dict[str, float] = {}
     steps = 0
     phase = "train" if training else "val"
