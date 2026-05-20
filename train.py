@@ -81,7 +81,7 @@ def run_epoch(
     criterion: YoloLoss,
     device: torch.device,
     optimizer: torch.optim.Optimizer | None = None,
-    scaler: torch.cuda.amp.GradScaler | None = None,
+    scaler: torch.amp.GradScaler | None = None,
     use_amp: bool = False,
     epoch: int = 0,
     total_epochs: int = 0,
@@ -105,7 +105,7 @@ def run_epoch(
 
         with torch.set_grad_enabled(training):
             autocast_enabled = use_amp and device.type == "cuda"
-            amp_context = torch.cuda.amp.autocast(enabled=True) if autocast_enabled else nullcontext()
+            amp_context = torch.amp.autocast("cuda", enabled=True) if autocast_enabled else nullcontext()
             with amp_context:
                 pred = model(images)
                 loss, logs = criterion(pred, targets)
@@ -184,7 +184,7 @@ def main() -> None:
         return 0.5 * (1.0 + torch.cos(torch.tensor(progress * 3.1415926535))).item()
 
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_lambda)
-    scaler = torch.cuda.amp.GradScaler(enabled=args.amp and device.type == "cuda")
+    scaler = torch.amp.GradScaler("cuda", enabled=args.amp and device.type == "cuda")
 
     best_val = float("inf")
     for epoch in range(1, args.epochs + 1):
