@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+
+public/
+models/*.pth
+*.pth
+
+val_predictions.json
+val_score.json
+predictions.json
+score.json
+
+.env
+.venv/
+venv/
