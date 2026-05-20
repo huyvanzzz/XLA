@@ -39,12 +39,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--noobj_weight", type=float)
     parser.add_argument("--cls_weight", type=float)
     parser.add_argument("--iou_weight", type=float)
+    parser.add_argument("--aux_weight", type=float)
     parser.add_argument("--num_workers", type=int)
     parser.add_argument("--seed", type=int)
     return parser.parse_args()
 
 
-def apply_config(args: argparse.Namespace) -> tuple[argparse.Namespace, list[tuple[float, float]], dict, dict]:
+def apply_config(args: argparse.Namespace) -> tuple[argparse.Namespace, list[list[tuple[float, float]]], dict, dict]:
     config = load_config(args.config)
     loss_weights = config["loss_weights"]
     for name in [
@@ -60,7 +61,7 @@ def apply_config(args: argparse.Namespace) -> tuple[argparse.Namespace, list[tup
     ]:
         if getattr(args, name) is None:
             setattr(args, name, config[name])
-    for name in ["box_weight", "obj_weight", "noobj_weight", "cls_weight", "iou_weight"]:
+    for name in ["box_weight", "obj_weight", "noobj_weight", "cls_weight", "iou_weight", "aux_weight"]:
         if getattr(args, name) is None:
             setattr(args, name, loss_weights[name])
     if args.no_amp:
@@ -95,8 +96,10 @@ class ModelEMA:
 
 
 def set_backbone_frozen(model: TinyDetector, frozen: bool) -> None:
-    for parameter in model.backbone.parameters():
-        parameter.requires_grad_(not frozen)
+    head_prefixes = ("main_heads", "aux_heads")
+    for name, parameter in model.named_parameters():
+        is_head = name.startswith(head_prefixes)
+        parameter.requires_grad_(is_head or not frozen)
 
 
 def run_epoch(
@@ -201,7 +204,7 @@ def main() -> None:
         pin_memory=torch.cuda.is_available(),
     )
 
-    model = TinyDetector(num_classes=len(classes), num_anchors=len(anchors), **model_config).to(device)
+    model = TinyDetector(num_classes=len(classes), num_anchors=[len(scale) for scale in anchors], **model_config).to(device)
     criterion = YoloLoss(
         anchors,
         image_size=args.image_size,
@@ -211,6 +214,7 @@ def main() -> None:
         noobj_weight=args.noobj_weight,
         cls_weight=args.cls_weight,
         iou_weight=args.iou_weight,
+        aux_weight=args.aux_weight,
         label_smoothing=args.label_smoothing,
     ).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
@@ -286,6 +290,7 @@ def main() -> None:
                 "noobj_weight": args.noobj_weight,
                 "cls_weight": args.cls_weight,
                 "iou_weight": args.iou_weight,
+                "aux_weight": args.aux_weight,
             },
             "amp": args.amp,
             "label_smoothing": args.label_smoothing,

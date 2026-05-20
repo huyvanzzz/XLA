@@ -4,38 +4,27 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from utils.box_ops import box_iou
-from utils.box_ops import wh_iou
+from utils.box_ops import box_iou, wh_iou
 
 
 class YoloLoss(nn.Module):
-    """YOLO-style loss written as explicit, inspectable components.
-
-    Prediction format per anchor:
-        [tx, ty, tw, th, object_logit, class_logits...]
-
-    Loss components:
-        box_loss: SmoothL1 on center offsets and log width/height for positive anchors.
-        iou_loss: 1 - IoU on decoded positive boxes.
-        obj_loss: BCEWithLogits for anchors assigned to a ground-truth object.
-        noobj_loss: BCEWithLogits for background anchors.
-        cls_loss: CrossEntropy over classes for positive anchors.
-    """
+    """Multi-scale YOLO loss with explicit components and auxiliary-head support."""
 
     def __init__(
         self,
-        anchors: list[tuple[float, float]],
+        anchors: list[list[tuple[float, float]]],
         image_size: int,
         num_classes: int,
-        box_weight: float = 5.0,
+        box_weight: float = 7.5,
         obj_weight: float = 1.0,
-        noobj_weight: float = 0.5,
+        noobj_weight: float = 0.35,
         cls_weight: float = 1.0,
         iou_weight: float = 1.5,
+        aux_weight: float = 0.4,
         label_smoothing: float = 0.03,
     ) -> None:
         super().__init__()
-        self.register_buffer("anchors", torch.tensor(anchors, dtype=torch.float32))
+        self.anchors = [[(float(w), float(h)) for w, h in scale] for scale in anchors]
         self.image_size = image_size
         self.num_classes = num_classes
         self.box_weight = box_weight
@@ -43,86 +32,147 @@ class YoloLoss(nn.Module):
         self.noobj_weight = noobj_weight
         self.cls_weight = cls_weight
         self.iou_weight = iou_weight
+        self.aux_weight = aux_weight
         self.label_smoothing = label_smoothing
 
-    def forward(self, pred: torch.Tensor, targets: list[dict[str, torch.Tensor]]) -> tuple[torch.Tensor, dict[str, float]]:
-        device = pred.device
-        batch_size, grid_h, grid_w, num_anchors, _ = pred.shape
-        stride_x = self.image_size / grid_w
-        stride_y = self.image_size / grid_h
+    def forward(
+        self,
+        pred: dict[str, list[torch.Tensor]] | list[torch.Tensor],
+        targets: list[dict[str, torch.Tensor]],
+    ) -> tuple[torch.Tensor, dict[str, float]]:
+        if isinstance(pred, dict):
+            main_preds = pred["main"]
+            aux_preds = pred.get("aux", [])
+        else:
+            main_preds = pred
+            aux_preds = []
 
-        obj_target = torch.zeros((batch_size, grid_h, grid_w, num_anchors), device=device)
-        box_target = torch.zeros((batch_size, grid_h, grid_w, num_anchors, 4), device=device)
-        xyxy_target = torch.zeros((batch_size, grid_h, grid_w, num_anchors, 4), device=device)
-        cls_target = torch.zeros((batch_size, grid_h, grid_w, num_anchors), dtype=torch.long, device=device)
+        main_loss, main_logs = self._loss_for_predictions(main_preds, targets)
+        if aux_preds:
+            aux_loss, aux_logs = self._loss_for_predictions(aux_preds, targets)
+            total = main_loss + self.aux_weight * aux_loss
+            main_logs["loss"] = float(total.detach().cpu())
+            main_logs["aux_loss"] = float(aux_loss.detach().cpu())
+            main_logs["aux_box_loss"] = aux_logs["box_loss"]
+            main_logs["aux_iou_loss"] = aux_logs["iou_loss"]
+            return total, main_logs
+        main_logs["aux_loss"] = 0.0
+        return main_loss, main_logs
 
-        anchors = self.anchors.to(device)
-        for b, target in enumerate(targets):
+    def _loss_for_predictions(
+        self,
+        preds: list[torch.Tensor],
+        targets: list[dict[str, torch.Tensor]],
+    ) -> tuple[torch.Tensor, dict[str, float]]:
+        device = preds[0].device
+        anchors_by_scale = [torch.tensor(scale, dtype=torch.float32, device=device) for scale in self.anchors]
+
+        obj_targets: list[torch.Tensor] = []
+        box_targets: list[torch.Tensor] = []
+        xyxy_targets: list[torch.Tensor] = []
+        cls_targets: list[torch.Tensor] = []
+        for pred in preds:
+            b, h, w, a, _ = pred.shape
+            obj_targets.append(torch.zeros((b, h, w, a), device=device))
+            box_targets.append(torch.zeros((b, h, w, a, 4), device=device))
+            xyxy_targets.append(torch.zeros((b, h, w, a, 4), device=device))
+            cls_targets.append(torch.zeros((b, h, w, a), dtype=torch.long, device=device))
+
+        flat_anchors = torch.cat(anchors_by_scale, dim=0)
+        scale_offsets = []
+        offset = 0
+        for anchors in anchors_by_scale:
+            scale_offsets.append(offset)
+            offset += anchors.shape[0]
+
+        for batch_idx, target in enumerate(targets):
             boxes = target["boxes"].to(device)
             labels = target["labels"].to(device)
             if boxes.numel() == 0:
                 continue
-
-            centers = (boxes[:, :2] + boxes[:, 2:]) * 0.5
             wh = (boxes[:, 2:] - boxes[:, :2]).clamp(min=1.0)
-            cell_x = (centers[:, 0] / stride_x).clamp(0, grid_w - 1e-4)
-            cell_y = (centers[:, 1] / stride_y).clamp(0, grid_h - 1e-4)
-            grid_x = cell_x.floor().long()
-            grid_y = cell_y.floor().long()
+            centers = (boxes[:, :2] + boxes[:, 2:]) * 0.5
+            best_flat_anchor = wh_iou(flat_anchors, wh).argmax(dim=0)
+            for obj_idx in range(boxes.shape[0]):
+                flat_anchor_idx = int(best_flat_anchor[obj_idx].item())
+                scale_idx = max(i for i, start in enumerate(scale_offsets) if flat_anchor_idx >= start)
+                anchor_idx = flat_anchor_idx - scale_offsets[scale_idx]
+                pred = preds[scale_idx]
+                _, grid_h, grid_w, _, _ = pred.shape
+                stride_x = self.image_size / grid_w
+                stride_y = self.image_size / grid_h
+                cell_x = (centers[obj_idx, 0] / stride_x).clamp(0, grid_w - 1e-4)
+                cell_y = (centers[obj_idx, 1] / stride_y).clamp(0, grid_h - 1e-4)
+                gx = cell_x.floor().long()
+                gy = cell_y.floor().long()
+                anchor = anchors_by_scale[scale_idx][anchor_idx]
 
-            best_anchor = wh_iou(anchors, wh).argmax(dim=0)
-            for i in range(boxes.shape[0]):
-                gy = grid_y[i]
-                gx = grid_x[i]
-                a = best_anchor[i]
-                obj_target[b, gy, gx, a] = 1.0
-                box_target[b, gy, gx, a, 0] = cell_x[i] - gx.float()
-                box_target[b, gy, gx, a, 1] = cell_y[i] - gy.float()
-                box_target[b, gy, gx, a, 2] = torch.log(wh[i, 0] / anchors[a, 0].clamp(min=1e-6))
-                box_target[b, gy, gx, a, 3] = torch.log(wh[i, 1] / anchors[a, 1].clamp(min=1e-6))
-                xyxy_target[b, gy, gx, a] = boxes[i]
-                cls_target[b, gy, gx, a] = labels[i]
+                obj_targets[scale_idx][batch_idx, gy, gx, anchor_idx] = 1.0
+                box_targets[scale_idx][batch_idx, gy, gx, anchor_idx, 0] = cell_x - gx.float()
+                box_targets[scale_idx][batch_idx, gy, gx, anchor_idx, 1] = cell_y - gy.float()
+                box_targets[scale_idx][batch_idx, gy, gx, anchor_idx, 2] = torch.log(wh[obj_idx, 0] / anchor[0].clamp(min=1e-6))
+                box_targets[scale_idx][batch_idx, gy, gx, anchor_idx, 3] = torch.log(wh[obj_idx, 1] / anchor[1].clamp(min=1e-6))
+                xyxy_targets[scale_idx][batch_idx, gy, gx, anchor_idx] = boxes[obj_idx]
+                cls_targets[scale_idx][batch_idx, gy, gx, anchor_idx] = labels[obj_idx]
 
-        pred_xy = pred[..., 0:2].sigmoid()
-        pred_wh = pred[..., 2:4]
-        pred_obj_logit = pred[..., 4]
-        pred_cls_logit = pred[..., 5:]
+        box_loss = preds[0].sum() * 0.0
+        iou_loss = preds[0].sum() * 0.0
+        cls_loss = preds[0].sum() * 0.0
+        obj_loss = preds[0].sum() * 0.0
+        noobj_loss = preds[0].sum() * 0.0
+        total_pos = torch.tensor(0.0, device=device)
 
-        pos_mask = obj_target == 1
-        neg_mask = obj_target == 0
-        num_pos = pos_mask.sum().clamp(min=1).float()
+        for scale_idx, pred in enumerate(preds):
+            anchors = anchors_by_scale[scale_idx]
+            obj_target = obj_targets[scale_idx]
+            pos_mask = obj_target == 1
+            neg_mask = obj_target == 0
+            num_pos = pos_mask.sum().clamp(min=1).float()
+            total_pos += pos_mask.sum().float()
 
-        if pos_mask.any():
-            box_loss_xy = F.smooth_l1_loss(pred_xy[pos_mask], box_target[..., 0:2][pos_mask], reduction="sum") / num_pos
-            box_loss_wh = F.smooth_l1_loss(pred_wh[pos_mask], box_target[..., 2:4][pos_mask], reduction="sum") / num_pos
-            box_loss = box_loss_xy + box_loss_wh
-            decoded_boxes = self._decode_boxes(pred, anchors, stride_x, stride_y)
-            ious = box_iou(decoded_boxes[pos_mask], xyxy_target[pos_mask]).diag()
-            iou_loss = (1.0 - ious).sum() / num_pos
-            cls_loss = F.cross_entropy(
-                pred_cls_logit[pos_mask],
-                cls_target[pos_mask],
+            pred_xy = pred[..., 0:2].sigmoid()
+            pred_wh = pred[..., 2:4]
+            pred_obj_logit = pred[..., 4]
+            pred_cls_logit = pred[..., 5:]
+
+            if pos_mask.any():
+                box_loss = box_loss + F.smooth_l1_loss(
+                    pred_xy[pos_mask],
+                    box_targets[scale_idx][..., 0:2][pos_mask],
+                    reduction="sum",
+                ) / num_pos
+                box_loss = box_loss + F.smooth_l1_loss(
+                    pred_wh[pos_mask],
+                    box_targets[scale_idx][..., 2:4][pos_mask],
+                    reduction="sum",
+                ) / num_pos
+                decoded_boxes = self._decode_boxes(pred, anchors)
+                ious = box_iou(decoded_boxes[pos_mask], xyxy_targets[scale_idx][pos_mask]).diag()
+                iou_loss = iou_loss + (1.0 - ious).sum() / num_pos
+                cls_loss = cls_loss + F.cross_entropy(
+                    pred_cls_logit[pos_mask],
+                    cls_targets[scale_idx][pos_mask],
+                    reduction="sum",
+                    label_smoothing=self.label_smoothing,
+                ) / num_pos
+
+            obj_loss = obj_loss + F.binary_cross_entropy_with_logits(
+                pred_obj_logit[pos_mask],
+                obj_target[pos_mask],
                 reduction="sum",
-                label_smoothing=self.label_smoothing,
             ) / num_pos
-        else:
-            box_loss = pred.sum() * 0.0
-            iou_loss = pred.sum() * 0.0
-            cls_loss = pred.sum() * 0.0
+            noobj_loss = noobj_loss + F.binary_cross_entropy_with_logits(
+                pred_obj_logit[neg_mask],
+                obj_target[neg_mask],
+                reduction="sum",
+            ) / neg_mask.sum().clamp(min=1).float()
 
-        obj_loss = F.binary_cross_entropy_with_logits(
-            pred_obj_logit[pos_mask],
-            obj_target[pos_mask],
-            reduction="sum",
-        ) / num_pos
-
-        noobj_count = neg_mask.sum().clamp(min=1).float()
-        noobj_loss = F.binary_cross_entropy_with_logits(
-            pred_obj_logit[neg_mask],
-            obj_target[neg_mask],
-            reduction="sum",
-        ) / noobj_count
-
+        num_scales = max(len(preds), 1)
+        box_loss = box_loss / num_scales
+        iou_loss = iou_loss / num_scales
+        cls_loss = cls_loss / num_scales
+        obj_loss = obj_loss / num_scales
+        noobj_loss = noobj_loss / num_scales
         total = (
             self.box_weight * box_loss
             + self.iou_weight * iou_loss
@@ -137,14 +187,15 @@ class YoloLoss(nn.Module):
             "obj_loss": float(obj_loss.detach().cpu()),
             "noobj_loss": float(noobj_loss.detach().cpu()),
             "cls_loss": float(cls_loss.detach().cpu()),
-            "num_pos": float(num_pos.detach().cpu()),
+            "num_pos": float(total_pos.detach().cpu()),
         }
         return total, logs
 
-    @staticmethod
-    def _decode_boxes(pred: torch.Tensor, anchors: torch.Tensor, stride_x: float, stride_y: float) -> torch.Tensor:
+    def _decode_boxes(self, pred: torch.Tensor, anchors: torch.Tensor) -> torch.Tensor:
         _, grid_h, grid_w, _, _ = pred.shape
         device = pred.device
+        stride_x = self.image_size / grid_w
+        stride_y = self.image_size / grid_h
         yy, xx = torch.meshgrid(
             torch.arange(grid_h, device=device),
             torch.arange(grid_w, device=device),

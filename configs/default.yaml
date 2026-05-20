@@ -19,22 +19,18 @@ augmentation:
   max_scale: 1.25
 
 model:
-  backbone: resnet34
+  backbone: resnet50
   pretrained: true
-  base_channels: 48
-  head_channels: 384
-  dropout: 0.08
-  residual_blocks:
-    stage2: 1
-    stage3: 3
-    stage4: 4
+  base_channels: 40
+  head_channels: 256
+  dropout: 0.05
+  elan_depth: 2
+  aux_head: true
 
 anchors:
-  - [16.0, 24.0]
-  - [32.0, 48.0]
-  - [64.0, 96.0]
-  - [128.0, 160.0]
-  - [220.0, 260.0]
+  - [[10.0, 13.0], [16.0, 24.0], [32.0, 32.0]]
+  - [[32.0, 48.0], [64.0, 96.0], [96.0, 128.0]]
+  - [[128.0, 160.0], [220.0, 260.0], [320.0, 320.0]]
 
 loss_weights:
   box_weight: 7.5
@@ -42,6 +38,7 @@ loss_weights:
   noobj_weight: 0.35
   cls_weight: 1.0
   iou_weight: 1.5
+  aux_weight: 0.4
 
 inference:
   conf_threshold: 0.2

@@ -26,24 +26,26 @@ DEFAULT_CONFIG = {
         "max_scale": 1.25,
     },
     "model": {
-        "backbone": "resnet34",
+        "backbone": "resnet50",
         "pretrained": True,
-        "base_channels": 48,
-        "head_channels": 384,
-        "dropout": 0.08,
-        "residual_blocks": {
-            "stage2": 1,
-            "stage3": 3,
-            "stage4": 4,
-        },
+        "base_channels": 40,
+        "head_channels": 256,
+        "dropout": 0.05,
+        "elan_depth": 2,
+        "aux_head": True,
     },
-    "anchors": [(16.0, 24.0), (32.0, 48.0), (64.0, 96.0), (128.0, 160.0), (220.0, 260.0)],
+    "anchors": [
+        [(10.0, 13.0), (16.0, 24.0), (32.0, 32.0)],
+        [(32.0, 48.0), (64.0, 96.0), (96.0, 128.0)],
+        [(128.0, 160.0), (220.0, 260.0), (320.0, 320.0)],
+    ],
     "loss_weights": {
         "box_weight": 5.0,
         "obj_weight": 1.0,
         "noobj_weight": 0.5,
         "cls_weight": 1.0,
         "iou_weight": 1.5,
+        "aux_weight": 0.4,
     },
     "inference": {
         "conf_threshold": 0.25,
@@ -90,5 +92,8 @@ def load_config(path: str | Path | None) -> dict[str, Any]:
     return deep_update(config, user_config)
 
 
-def get_anchors(config: dict[str, Any]) -> list[tuple[float, float]]:
-    return [(float(w), float(h)) for w, h in config["anchors"]]
+def get_anchors(config: dict[str, Any]) -> list[list[tuple[float, float]]]:
+    anchors = config["anchors"]
+    if anchors and anchors[0] and isinstance(anchors[0][0], (int, float)):
+        return [[(float(w), float(h)) for w, h in anchors]]
+    return [[(float(w), float(h)) for w, h in scale] for scale in anchors]

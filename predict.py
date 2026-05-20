@@ -54,7 +54,7 @@ def main() -> None:
     model_config = dict(checkpoint.get("model_config", config["model"]))
     model_config["pretrained"] = False
 
-    model = TinyDetector(num_classes=len(classes), num_anchors=len(anchors), **model_config).to(device)
+    model = TinyDetector(num_classes=len(classes), num_anchors=[len(scale) for scale in anchors], **model_config).to(device)
     model.load_state_dict(checkpoint["model"])
     model.eval()
 

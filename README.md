@@ -19,7 +19,7 @@ configs/default.yaml
 ```
 
 Bạn có thể sửa trực tiếp file YAML này để đổi `image_size`, `epochs`, `batch_size`, `lr`, `anchors`, `loss_weights`, `conf_threshold`, `nms_threshold`.
-Mục `model` điều chỉnh backbone/head. Mặc định dùng `resnet34` pretrained ImageNet làm backbone, còn detection head, loss, decode và NMS vẫn tự triển khai.
+Mục `model` điều chỉnh backbone/head. Mặc định dùng ResNet50 pretrained ImageNet làm backbone, còn YOLO heads, auxiliary heads, loss, decode và NMS vẫn tự triển khai.
 Config cũng có các cơ chế chống overfit: random crop/scale augmentation, dropout trong detection head, freeze backbone vài epoch đầu, early stopping và EMA weights.
 
 Lệnh bắt buộc của đề:
@@ -84,10 +84,11 @@ python public/tools/evaluate_predictions.py \
 
 ## Kiến trúc
 
-- Backbone mặc định là ResNet34 pretrained ImageNet từ `torchvision.models`, lấy feature tới `layer3` để giữ stride 16.
-- Có thể đổi `model.backbone: custom` để dùng CNN tự viết bằng `Conv2d`, `BatchNorm2d`, `SiLU`, residual blocks và SPP.
-- Detection head dự đoán trên lưới stride 16, tức ảnh `416x416` cho feature map `26x26`.
-- Mỗi ô lưới có 5 anchor, cấu hình trong `configs/default.yaml`.
+- Backbone mặc định là ResNet50 pretrained ImageNet từ `torchvision.models`.
+- Có thể đổi `model.backbone: eelan` và `pretrained: false` để dùng E-ELAN-like CNN tự viết.
+- Detection head dự đoán trên 3 scale stride 8/16/32, tức ảnh `416x416` cho feature maps `52x52`, `26x26`, `13x13`.
+- Có auxiliary heads dùng khi train theo tinh thần trainable bag-of-freebies; inference chỉ dùng main heads.
+- Mỗi scale có 3 anchors, cấu hình trong `configs/default.yaml`.
 - Mỗi anchor dự đoán:
   - `tx, ty`: offset tâm box trong ô lưới.
   - `tw, th`: log-scale chiều rộng/cao so với anchor.
@@ -113,6 +114,7 @@ total_loss =
   + 1.0 * obj_loss
   + 0.35 * noobj_loss
   + 1.0 * cls_loss
+  + 0.4 * aux_loss
 ```
 
 Ground-truth box được gán vào ô lưới chứa tâm box. Trong ô đó, anchor có IoU theo width/height cao nhất sẽ là positive anchor.
