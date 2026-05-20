@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from copy import deepcopy
 from contextlib import nullcontext
 import random
 from pathlib import Path
@@ -43,7 +44,7 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def apply_config(args: argparse.Namespace) -> tuple[argparse.Namespace, list[tuple[float, float]], dict]:
+def apply_config(args: argparse.Namespace) -> tuple[argparse.Namespace, list[tuple[float, float]], dict, dict]:
     config = load_config(args.config)
     loss_weights = config["loss_weights"]
     for name in [
@@ -66,13 +67,36 @@ def apply_config(args: argparse.Namespace) -> tuple[argparse.Namespace, list[tup
         args.amp = False
     elif not args.amp:
         args.amp = bool(config.get("amp", True))
-    return args, get_anchors(config), config["model"]
+    return args, get_anchors(config), config["model"], config
 
 
 def seed_everything(seed: int) -> None:
     random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
+
+
+class ModelEMA:
+    def __init__(self, model: TinyDetector, decay: float = 0.999) -> None:
+        self.module = deepcopy(model).eval()
+        self.decay = decay
+        for parameter in self.module.parameters():
+            parameter.requires_grad_(False)
+
+    @torch.no_grad()
+    def update(self, model: TinyDetector) -> None:
+        model_state = model.state_dict()
+        for name, ema_value in self.module.state_dict().items():
+            model_value = model_state[name].detach()
+            if ema_value.dtype.is_floating_point:
+                ema_value.mul_(self.decay).add_(model_value, alpha=1.0 - self.decay)
+            else:
+                ema_value.copy_(model_value)
+
+
+def set_backbone_frozen(model: TinyDetector, frozen: bool) -> None:
+    for parameter in model.backbone.parameters():
+        parameter.requires_grad_(not frozen)
 
 
 def run_epoch(
@@ -85,9 +109,13 @@ def run_epoch(
     use_amp: bool = False,
     epoch: int = 0,
     total_epochs: int = 0,
+    ema: ModelEMA | None = None,
+    freeze_backbone: bool = False,
 ) -> dict[str, float]:
     training = optimizer is not None
     model.train(training)
+    if training and freeze_backbone:
+        model.backbone.eval()
     totals: dict[str, float] = {}
     steps = 0
     phase = "train" if training else "val"
@@ -120,6 +148,8 @@ def run_epoch(
                     loss.backward()
                     torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=10.0)
                     optimizer.step()
+                if ema is not None:
+                    ema.update(model)
 
         for key, value in logs.items():
             totals[key] = totals.get(key, 0.0) + float(value)
@@ -137,7 +167,7 @@ def run_epoch(
 
 def main() -> None:
     args = parse_args()
-    args, anchors, model_config = apply_config(args)
+    args, anchors, model_config, config = apply_config(args)
     seed_everything(args.seed)
 
     classes = load_classes(args.classes)
@@ -145,7 +175,14 @@ def main() -> None:
     checkpoint_dir = Path(args.checkpoint_dir)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
-    train_set = DetectionDataset(args.train_data, args.image_dir, classes, args.image_size, augment=True)
+    train_set = DetectionDataset(
+        args.train_data,
+        args.image_dir,
+        classes,
+        args.image_size,
+        augment=True,
+        augment_config=config["augmentation"],
+    )
     val_set = DetectionDataset(args.val_data, args.val_image_dir, classes, args.image_size, augment=False)
     train_loader = DataLoader(
         train_set,
@@ -185,9 +222,20 @@ def main() -> None:
 
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_lambda)
     scaler = torch.amp.GradScaler("cuda", enabled=args.amp and device.type == "cuda")
+    ema = ModelEMA(model, decay=float(config["ema"]["decay"])) if config["ema"]["enabled"] else None
+    freeze_backbone_epochs = int(config["freeze_backbone_epochs"])
+    early_stopping_patience = int(config["early_stopping_patience"])
 
     best_val = float("inf")
+    epochs_without_improvement = 0
     for epoch in range(1, args.epochs + 1):
+        freeze_backbone = epoch <= freeze_backbone_epochs
+        set_backbone_frozen(model, freeze_backbone)
+        if epoch == 1 and freeze_backbone:
+            print(f"freezing backbone for first {freeze_backbone_epochs} epoch(s)")
+        if epoch == freeze_backbone_epochs + 1 and freeze_backbone_epochs > 0:
+            print("unfreezing backbone")
+
         train_logs = run_epoch(
             model,
             train_loader,
@@ -198,10 +246,13 @@ def main() -> None:
             args.amp,
             epoch=epoch,
             total_epochs=args.epochs,
+            ema=ema,
+            freeze_backbone=freeze_backbone,
         )
+        eval_model = ema.module if ema is not None else model
         with torch.no_grad():
             val_logs = run_epoch(
-                model,
+                eval_model,
                 val_loader,
                 criterion,
                 device,
@@ -224,6 +275,7 @@ def main() -> None:
 
         state = {
             "model": model.state_dict(),
+            "raw_model": model.state_dict(),
             "classes": classes,
             "anchors": anchors,
             "image_size": args.image_size,
@@ -237,14 +289,24 @@ def main() -> None:
             },
             "amp": args.amp,
             "label_smoothing": args.label_smoothing,
+            "ema_enabled": ema is not None,
+            "freeze_backbone_epochs": freeze_backbone_epochs,
             "epoch": epoch,
             "val_loss": val_logs["loss"],
         }
+        if ema is not None:
+            state["model"] = ema.module.state_dict()
         torch.save(state, checkpoint_dir / "last.pth")
         if val_logs["loss"] < best_val:
             best_val = val_logs["loss"]
+            epochs_without_improvement = 0
             torch.save(state, checkpoint_dir / "best.pth")
             print(f"saved best checkpoint: {checkpoint_dir / 'best.pth'}")
+        else:
+            epochs_without_improvement += 1
+            if early_stopping_patience > 0 and epochs_without_improvement >= early_stopping_patience:
+                print(f"early stopping after {early_stopping_patience} epoch(s) without validation improvement")
+                break
 
 
 if __name__ == "__main__":

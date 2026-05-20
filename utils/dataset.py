@@ -24,6 +24,7 @@ class DetectionDataset(Dataset):
         classes: list[str],
         image_size: int = 416,
         augment: bool = False,
+        augment_config: dict[str, float] | None = None,
     ) -> None:
         self.annotation_path = Path(annotation_path)
         self.image_dir = Path(image_dir)
@@ -31,6 +32,7 @@ class DetectionDataset(Dataset):
         self.class_to_idx = {name: idx for idx, name in enumerate(classes)}
         self.image_size = image_size
         self.augment = augment
+        self.augment_config = augment_config or {}
 
         with self.annotation_path.open("r", encoding="utf-8") as f:
             data = json.load(f)
@@ -73,10 +75,11 @@ class DetectionDataset(Dataset):
         labels_t = torch.tensor(labels, dtype=torch.long)
 
         if self.augment:
-            image, boxes_t = self._augment(image, boxes_t)
+            image, boxes_t, labels_t = self._augment(image, boxes_t, labels_t)
 
-        scale_x = self.image_size / orig_w
-        scale_y = self.image_size / orig_h
+        aug_w, aug_h = image.size
+        scale_x = self.image_size / aug_w
+        scale_y = self.image_size / aug_h
         if boxes_t.numel() > 0:
             boxes_t[:, [0, 2]] *= scale_x
             boxes_t[:, [1, 3]] *= scale_y
@@ -95,8 +98,17 @@ class DetectionDataset(Dataset):
         }
         return image_t, target
 
-    def _augment(self, image: Image.Image, boxes: torch.Tensor) -> tuple[Image.Image, torch.Tensor]:
+    def _augment(
+        self,
+        image: Image.Image,
+        boxes: torch.Tensor,
+        labels: torch.Tensor,
+    ) -> tuple[Image.Image, torch.Tensor, torch.Tensor]:
         width, _ = image.size
+        image, boxes = self._random_scale(image, boxes)
+        image, boxes, labels = self._random_crop(image, boxes, labels)
+        width, _ = image.size
+
         if random.random() < 0.5:
             image = image.transpose(Image.FLIP_LEFT_RIGHT)
             if boxes.numel() > 0:
@@ -111,7 +123,57 @@ class DetectionDataset(Dataset):
             image = ImageEnhance.Brightness(image).enhance(random.uniform(0.75, 1.25))
         if random.random() < 0.3:
             image = ImageEnhance.Contrast(image).enhance(random.uniform(0.75, 1.25))
+        return image, boxes, labels
+
+    def _random_scale(self, image: Image.Image, boxes: torch.Tensor) -> tuple[Image.Image, torch.Tensor]:
+        prob = float(self.augment_config.get("random_scale_prob", 0.0))
+        if random.random() >= prob:
+            return image, boxes
+
+        scale = random.uniform(
+            float(self.augment_config.get("min_scale", 0.75)),
+            float(self.augment_config.get("max_scale", 1.25)),
+        )
+        width, height = image.size
+        new_w = max(16, int(width * scale))
+        new_h = max(16, int(height * scale))
+        image = image.resize((new_w, new_h), Image.BILINEAR)
+        if boxes.numel() > 0:
+            boxes[:, [0, 2]] *= new_w / width
+            boxes[:, [1, 3]] *= new_h / height
         return image, boxes
+
+    def _random_crop(
+        self,
+        image: Image.Image,
+        boxes: torch.Tensor,
+        labels: torch.Tensor,
+    ) -> tuple[Image.Image, torch.Tensor, torch.Tensor]:
+        prob = float(self.augment_config.get("random_crop_prob", 0.0))
+        if boxes.numel() == 0 or random.random() >= prob:
+            return image, boxes, labels
+
+        width, height = image.size
+        min_scale = float(self.augment_config.get("min_crop_scale", 0.75))
+        crop_w = random.randint(max(16, int(width * min_scale)), width)
+        crop_h = random.randint(max(16, int(height * min_scale)), height)
+        left = random.randint(0, max(width - crop_w, 0))
+        top = random.randint(0, max(height - crop_h, 0))
+        right = left + crop_w
+        bottom = top + crop_h
+
+        cropped = boxes.clone()
+        cropped[:, [0, 2]] -= left
+        cropped[:, [1, 3]] -= top
+        cropped[:, 0::2].clamp_(0, crop_w)
+        cropped[:, 1::2].clamp_(0, crop_h)
+        wh = cropped[:, 2:] - cropped[:, :2]
+        keep = (wh[:, 0] >= 4) & (wh[:, 1] >= 4)
+        if not keep.any():
+            return image, boxes, labels
+
+        image = image.crop((left, top, right, bottom))
+        return image, cropped[keep], labels[keep]
 
     @staticmethod
     def _to_tensor(image: Image.Image) -> torch.Tensor:

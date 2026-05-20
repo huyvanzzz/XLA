@@ -51,7 +51,8 @@ def main() -> None:
     classes = checkpoint.get("classes") or load_classes(args.classes)
     anchors = checkpoint.get("anchors") or get_anchors(config)
     image_size = int(checkpoint.get("image_size", config["image_size"]))
-    model_config = checkpoint.get("model_config", config["model"])
+    model_config = dict(checkpoint.get("model_config", config["model"]))
+    model_config["pretrained"] = False
 
     model = TinyDetector(num_classes=len(classes), num_anchors=len(anchors), **model_config).to(device)
     model.load_state_dict(checkpoint["model"])

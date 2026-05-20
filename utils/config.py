@@ -16,11 +16,21 @@ DEFAULT_CONFIG = {
     "amp": True,
     "warmup_epochs": 3,
     "label_smoothing": 0.03,
+    "freeze_backbone_epochs": 3,
+    "early_stopping_patience": 15,
+    "augmentation": {
+        "random_crop_prob": 0.35,
+        "min_crop_scale": 0.75,
+        "random_scale_prob": 0.35,
+        "min_scale": 0.75,
+        "max_scale": 1.25,
+    },
     "model": {
         "backbone": "resnet34",
         "pretrained": True,
         "base_channels": 48,
         "head_channels": 384,
+        "dropout": 0.08,
         "residual_blocks": {
             "stage2": 1,
             "stage3": 3,
@@ -39,6 +49,10 @@ DEFAULT_CONFIG = {
         "conf_threshold": 0.25,
         "nms_threshold": 0.5,
         "max_detections": 100,
+    },
+    "ema": {
+        "enabled": True,
+        "decay": 0.999,
     },
 }
 

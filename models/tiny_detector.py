@@ -70,6 +70,7 @@ class TinyDetector(nn.Module):
         residual_blocks: dict[str, int] | None = None,
         backbone: str = "resnet34",
         pretrained: bool = True,
+        dropout: float = 0.08,
     ) -> None:
         super().__init__()
         self.num_classes = num_classes
@@ -115,9 +116,11 @@ class TinyDetector(nn.Module):
             nn.Conv2d(backbone_channels, head_channels, kernel_size=3, padding=1, bias=False),
             nn.BatchNorm2d(head_channels),
             nn.SiLU(inplace=True),
+            nn.Dropout2d(p=dropout) if dropout > 0 else nn.Identity(),
             nn.Conv2d(head_channels, head_channels, kernel_size=3, padding=1, bias=False),
             nn.BatchNorm2d(head_channels),
             nn.SiLU(inplace=True),
+            nn.Dropout2d(p=dropout) if dropout > 0 else nn.Identity(),
             nn.Conv2d(head_channels, num_anchors * self.pred_dim, kernel_size=1),
         )
 

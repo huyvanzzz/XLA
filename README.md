@@ -20,6 +20,7 @@ configs/default.yaml
 
 Bạn có thể sửa trực tiếp file YAML này để đổi `image_size`, `epochs`, `batch_size`, `lr`, `anchors`, `loss_weights`, `conf_threshold`, `nms_threshold`.
 Mục `model` điều chỉnh backbone/head. Mặc định dùng `resnet34` pretrained ImageNet làm backbone, còn detection head, loss, decode và NMS vẫn tự triển khai.
+Config cũng có các cơ chế chống overfit: random crop/scale augmentation, dropout trong detection head, freeze backbone vài epoch đầu, early stopping và EMA weights.
 
 Lệnh bắt buộc của đề:
 
