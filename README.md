@@ -84,7 +84,7 @@ python public/tools/evaluate_predictions.py \
 
 ## Kiến trúc
 
-- Backbone mặc định là ResNet50 pretrained ImageNet từ `torchvision.models`.
+- Backbone mặc định là ResNet50 pretrained ImageNet. Kiến trúc ResNet50 được cài trong repo và tải weight bằng `torch.hub`, không phụ thuộc `torchvision`.
 - Có thể đổi `model.backbone: eelan` và `pretrained: false` để dùng E-ELAN-like CNN tự viết.
 - Detection head dự đoán trên 3 scale stride 8/16/32, tức ảnh `416x416` cho feature maps `52x52`, `26x26`, `13x13`.
 - Có auxiliary heads dùng khi train theo tinh thần trainable bag-of-freebies; inference chỉ dùng main heads.

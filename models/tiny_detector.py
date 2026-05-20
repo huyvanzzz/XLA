@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import torch
 from torch import nn
-from torchvision.models import ResNet50_Weights, resnet50
 
 
 class ConvBNAct(nn.Module):
@@ -72,6 +71,70 @@ class SPPBlock(nn.Module):
         return self.fuse(torch.cat([x, self.pool5(x), self.pool9(x), self.pool13(x)], dim=1))
 
 
+class Bottleneck(nn.Module):
+    expansion = 4
+
+    def __init__(self, in_channels: int, channels: int, stride: int = 1) -> None:
+        super().__init__()
+        out_channels = channels * self.expansion
+        self.conv1 = nn.Conv2d(in_channels, channels, kernel_size=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(channels)
+        self.conv2 = nn.Conv2d(channels, channels, kernel_size=3, stride=stride, padding=1, bias=False)
+        self.bn2 = nn.BatchNorm2d(channels)
+        self.conv3 = nn.Conv2d(channels, out_channels, kernel_size=1, bias=False)
+        self.bn3 = nn.BatchNorm2d(out_channels)
+        self.relu = nn.ReLU(inplace=True)
+        self.downsample = None
+        if stride != 1 or in_channels != out_channels:
+            self.downsample = nn.Sequential(
+                nn.Conv2d(in_channels, out_channels, kernel_size=1, stride=stride, bias=False),
+                nn.BatchNorm2d(out_channels),
+            )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        identity = x
+        out = self.relu(self.bn1(self.conv1(x)))
+        out = self.relu(self.bn2(self.conv2(out)))
+        out = self.bn3(self.conv3(out))
+        if self.downsample is not None:
+            identity = self.downsample(x)
+        return self.relu(out + identity)
+
+
+class ResNet50Backbone(nn.Module):
+    WEIGHTS_URL = "https://download.pytorch.org/models/resnet50-11ad3fa6.pth"
+
+    def __init__(self, pretrained: bool = True) -> None:
+        super().__init__()
+        self.inplanes = 64
+        self.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3, bias=False)
+        self.bn1 = nn.BatchNorm2d(64)
+        self.relu = nn.ReLU(inplace=True)
+        self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
+        self.layer1 = self._make_layer(64, 3)
+        self.layer2 = self._make_layer(128, 4, stride=2)
+        self.layer3 = self._make_layer(256, 6, stride=2)
+        self.layer4 = self._make_layer(512, 3, stride=2)
+        if pretrained:
+            state = torch.hub.load_state_dict_from_url(self.WEIGHTS_URL, progress=True, map_location="cpu")
+            self.load_state_dict({k: v for k, v in state.items() if not k.startswith("fc.")}, strict=False)
+
+    def _make_layer(self, channels: int, blocks: int, stride: int = 1) -> nn.Sequential:
+        layers = [Bottleneck(self.inplanes, channels, stride=stride)]
+        self.inplanes = channels * Bottleneck.expansion
+        for _ in range(1, blocks):
+            layers.append(Bottleneck(self.inplanes, channels))
+        return nn.Sequential(*layers)
+
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        x = self.maxpool(self.relu(self.bn1(self.conv1(x))))
+        x = self.layer1(x)
+        p3 = self.layer2(x)
+        p4 = self.layer3(p3)
+        p5 = self.layer4(p4)
+        return p3, p4, p5
+
+
 class DetectionHead(nn.Module):
     def __init__(self, in_channels: int, head_channels: int, num_anchors: int, pred_dim: int, dropout: float) -> None:
         super().__init__()
@@ -117,13 +180,8 @@ class TinyDetector(nn.Module):
             self.num_anchors = num_anchors
 
         if backbone == "resnet50":
-            weights = ResNet50_Weights.IMAGENET1K_V2 if pretrained else None
-            resnet = resnet50(weights=weights)
-            self.stem = nn.Sequential(resnet.conv1, resnet.bn1, resnet.relu, resnet.maxpool)
-            self.layer1 = resnet.layer1
-            self.layer2 = resnet.layer2
-            self.layer3 = resnet.layer3
-            self.layer4 = nn.Sequential(resnet.layer4, SPPBlock(2048))
+            self.resnet = ResNet50Backbone(pretrained=pretrained)
+            self.spp = SPPBlock(2048)
             feature_channels = [512, 1024, 2048]
         elif backbone == "eelan":
             c1 = base_channels
@@ -165,10 +223,8 @@ class TinyDetector(nn.Module):
 
     def forward(self, x: torch.Tensor) -> dict[str, list[torch.Tensor]]:
         if self.backbone_name == "resnet50":
-            x = self.layer1(self.stem(x))
-            p3 = self.layer2(x)
-            p4 = self.layer3(p3)
-            p5 = self.layer4(p4)
+            p3, p4, p5 = self.resnet(x)
+            p5 = self.spp(p5)
         else:
             x = self.stem(x)
             p3 = self.elan3(self.down3(x))
