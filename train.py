@@ -7,6 +7,7 @@ from pathlib import Path
 
 import torch
 from torch.utils.data import DataLoader
+from tqdm.auto import tqdm
 
 from models.tiny_detector import TinyDetector
 from utils.config import get_anchors, load_config
@@ -82,13 +83,22 @@ def run_epoch(
     optimizer: torch.optim.Optimizer | None = None,
     scaler: torch.cuda.amp.GradScaler | None = None,
     use_amp: bool = False,
+    epoch: int = 0,
+    total_epochs: int = 0,
 ) -> dict[str, float]:
     training = optimizer is not None
     model.train(training)
     totals: dict[str, float] = {}
     steps = 0
+    phase = "train" if training else "val"
+    progress = tqdm(
+        loader,
+        desc=f"{phase} {epoch}/{total_epochs}" if total_epochs else phase,
+        leave=False,
+        dynamic_ncols=True,
+    )
 
-    for images, targets in loader:
+    for images, targets in progress:
         images = images.to(device)
         if training:
             optimizer.zero_grad(set_to_none=True)
@@ -114,6 +124,13 @@ def run_epoch(
         for key, value in logs.items():
             totals[key] = totals.get(key, 0.0) + float(value)
         steps += 1
+        progress.set_postfix(
+            loss=f"{logs['loss']:.3f}",
+            box=f"{logs['box_loss']:.3f}",
+            iou=f"{logs['iou_loss']:.3f}",
+            obj=f"{logs['obj_loss']:.3f}",
+            cls=f"{logs['cls_loss']:.3f}",
+        )
 
     return {key: value / max(steps, 1) for key, value in totals.items()}
 
@@ -171,9 +188,27 @@ def main() -> None:
 
     best_val = float("inf")
     for epoch in range(1, args.epochs + 1):
-        train_logs = run_epoch(model, train_loader, criterion, device, optimizer, scaler, args.amp)
+        train_logs = run_epoch(
+            model,
+            train_loader,
+            criterion,
+            device,
+            optimizer,
+            scaler,
+            args.amp,
+            epoch=epoch,
+            total_epochs=args.epochs,
+        )
         with torch.no_grad():
-            val_logs = run_epoch(model, val_loader, criterion, device, use_amp=args.amp)
+            val_logs = run_epoch(
+                model,
+                val_loader,
+                criterion,
+                device,
+                use_amp=args.amp,
+                epoch=epoch,
+                total_epochs=args.epochs,
+            )
         scheduler.step()
 
         print(
