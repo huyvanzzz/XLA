@@ -43,7 +43,7 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def apply_config(args: argparse.Namespace) -> tuple[argparse.Namespace, list[tuple[float, float]]]:
+def apply_config(args: argparse.Namespace) -> tuple[argparse.Namespace, list[tuple[float, float]], dict]:
     config = load_config(args.config)
     loss_weights = config["loss_weights"]
     for name in [
@@ -66,7 +66,7 @@ def apply_config(args: argparse.Namespace) -> tuple[argparse.Namespace, list[tup
         args.amp = False
     elif not args.amp:
         args.amp = bool(config.get("amp", True))
-    return args, get_anchors(config)
+    return args, get_anchors(config), config["model"]
 
 
 def seed_everything(seed: int) -> None:
@@ -137,7 +137,7 @@ def run_epoch(
 
 def main() -> None:
     args = parse_args()
-    args, anchors = apply_config(args)
+    args, anchors, model_config = apply_config(args)
     seed_everything(args.seed)
 
     classes = load_classes(args.classes)
@@ -164,7 +164,7 @@ def main() -> None:
         pin_memory=torch.cuda.is_available(),
     )
 
-    model = TinyDetector(num_classes=len(classes), num_anchors=len(anchors)).to(device)
+    model = TinyDetector(num_classes=len(classes), num_anchors=len(anchors), **model_config).to(device)
     criterion = YoloLoss(
         anchors,
         image_size=args.image_size,
@@ -227,6 +227,7 @@ def main() -> None:
             "classes": classes,
             "anchors": anchors,
             "image_size": args.image_size,
+            "model_config": model_config,
             "loss_weights": {
                 "box_weight": args.box_weight,
                 "obj_weight": args.obj_weight,

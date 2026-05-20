@@ -16,6 +16,15 @@ DEFAULT_CONFIG = {
     "amp": True,
     "warmup_epochs": 3,
     "label_smoothing": 0.03,
+    "model": {
+        "base_channels": 48,
+        "head_channels": 384,
+        "residual_blocks": {
+            "stage2": 1,
+            "stage3": 3,
+            "stage4": 4,
+        },
+    },
     "anchors": [(16.0, 24.0), (32.0, 48.0), (64.0, 96.0), (128.0, 160.0), (220.0, 260.0)],
     "loss_weights": {
         "box_weight": 5.0,

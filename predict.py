@@ -47,11 +47,13 @@ def main() -> None:
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     checkpoint = torch.load(checkpoint_path, map_location=device)
+    config = load_config(args.config)
     classes = checkpoint.get("classes") or load_classes(args.classes)
-    anchors = checkpoint.get("anchors") or get_anchors(load_config(args.config))
-    image_size = int(checkpoint.get("image_size", load_config(args.config)["image_size"]))
+    anchors = checkpoint.get("anchors") or get_anchors(config)
+    image_size = int(checkpoint.get("image_size", config["image_size"]))
+    model_config = checkpoint.get("model_config", config["model"])
 
-    model = TinyDetector(num_classes=len(classes), num_anchors=len(anchors)).to(device)
+    model = TinyDetector(num_classes=len(classes), num_anchors=len(anchors), **model_config).to(device)
     model.load_state_dict(checkpoint["model"])
     model.eval()
 

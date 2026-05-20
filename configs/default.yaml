@@ -1,6 +1,6 @@
 image_size: 416
-epochs: 20
-batch_size: 12
+epochs: 80
+batch_size: 24
 lr: 0.001
 weight_decay: 0.0001
 num_workers: 2
@@ -8,6 +8,14 @@ seed: 42
 amp: true
 warmup_epochs: 3
 label_smoothing: 0.03
+
+model:
+  base_channels: 48
+  head_channels: 384
+  residual_blocks:
+    stage2: 1
+    stage3: 3
+    stage4: 4
 
 anchors:
   - [16.0, 24.0]

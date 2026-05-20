@@ -19,6 +19,7 @@ configs/default.yaml
 ```
 
 Bạn có thể sửa trực tiếp file YAML này để đổi `image_size`, `epochs`, `batch_size`, `lr`, `anchors`, `loss_weights`, `conf_threshold`, `nms_threshold`.
+Mục `model` điều chỉnh độ mạnh của backbone/head, ví dụ `base_channels`, `head_channels` và số residual block.
 
 Lệnh bắt buộc của đề:
 
@@ -82,7 +83,7 @@ python public/tools/evaluate_predictions.py \
 
 ## Kiến trúc
 
-- Backbone CNN tự viết bằng `Conv2d`, `BatchNorm2d`, `SiLU`.
+- Backbone CNN tự viết bằng `Conv2d`, `BatchNorm2d`, `SiLU`, residual blocks và SPP.
 - Detection head dự đoán trên lưới stride 16, tức ảnh `416x416` cho feature map `26x26`.
 - Mỗi ô lưới có 5 anchor, cấu hình trong `configs/default.yaml`.
 - Mỗi anchor dự đoán:
