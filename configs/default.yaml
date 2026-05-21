@@ -59,14 +59,14 @@ inference:
   max_detections: 100
 
 validation_metric:
-  enabled: true
+  enabled: false
   conf_threshold: 0.05
   nms_threshold: 0.5
   nms_type: soft
-  tune: true
-  tune_every: 2
-  conf_thresholds: [0.01, 0.03, 0.05, 0.08]
-  nms_thresholds: [0.45, 0.5, 0.6]
+  tune: false
+  tune_every: 10
+  conf_thresholds: [0.03, 0.05]
+  nms_thresholds: [0.5]
 
 ema:
   enabled: true

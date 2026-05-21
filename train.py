@@ -495,7 +495,6 @@ def main() -> None:
     early_stopping_patience = int(config["early_stopping_patience"])
 
     best_val = float("inf")
-    best_map = -1.0
     epochs_without_improvement = 0
     for epoch in range(1, args.epochs + 1):
         if config["multi_scale"]["enabled"]:
@@ -603,16 +602,8 @@ def main() -> None:
         if ema is not None:
             state["model"] = ema.module.state_dict()
         torch.save(state, checkpoint_dir / "last.pth")
-        improved = False
-        if metric_logs is not None:
-            improved = metric_logs["map50"] > best_map
-        else:
-            improved = val_logs["loss"] < best_val
-
-        if improved:
+        if val_logs["loss"] < best_val:
             best_val = val_logs["loss"]
-            if metric_logs is not None:
-                best_map = metric_logs["map50"]
             epochs_without_improvement = 0
             torch.save(state, checkpoint_dir / "best.pth")
             print(f"saved best checkpoint: {checkpoint_dir / 'best.pth'}")
