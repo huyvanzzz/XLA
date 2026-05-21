@@ -7,6 +7,7 @@ from typing import Any
 
 DEFAULT_CONFIG = {
     "image_size": 416,
+    "multi_scale": {"enabled": True, "sizes": [352, 384, 416, 448, 480]},
     "epochs": 40,
     "batch_size": 16,
     "lr": 2e-4,
@@ -16,7 +17,7 @@ DEFAULT_CONFIG = {
     "amp": True,
     "warmup_epochs": 3,
     "label_smoothing": 0.03,
-    "freeze_backbone_epochs": 3,
+    "freeze_backbone_epochs": 1,
     "early_stopping_patience": 15,
     "augmentation": {
         "random_crop_prob": 0.35,
@@ -34,11 +35,17 @@ DEFAULT_CONFIG = {
         "elan_depth": 2,
         "aux_head": True,
     },
-    "anchors": [
-        [(10.0, 13.0), (16.0, 24.0), (32.0, 32.0)],
-        [(32.0, 48.0), (64.0, 96.0), (96.0, 128.0)],
-        [(128.0, 160.0), (220.0, 260.0), (320.0, 320.0)],
-    ],
+    "anchors": {
+        "auto": True,
+        "kmeans_iters": 40,
+        "per_scale": 3,
+        "values": [
+            [(10.0, 13.0), (16.0, 24.0), (32.0, 32.0)],
+            [(32.0, 48.0), (64.0, 96.0), (96.0, 128.0)],
+            [(128.0, 160.0), (220.0, 260.0), (320.0, 320.0)],
+        ],
+    },
+    "class_weights": {"enabled": True},
     "loss_weights": {
         "box_weight": 5.0,
         "obj_weight": 1.0,
@@ -46,11 +53,24 @@ DEFAULT_CONFIG = {
         "cls_weight": 1.0,
         "iou_weight": 1.5,
         "aux_weight": 0.4,
+        "objectness_focal_gamma": 1.5,
+        "iou_aware_objectness": True,
     },
     "inference": {
-        "conf_threshold": 0.25,
+        "conf_threshold": 0.05,
         "nms_threshold": 0.5,
+        "nms_type": "soft",
         "max_detections": 100,
+    },
+    "validation_metric": {
+        "enabled": True,
+        "conf_threshold": 0.05,
+        "nms_threshold": 0.5,
+        "nms_type": "soft",
+        "tune": True,
+        "tune_every": 2,
+        "conf_thresholds": [0.01, 0.03, 0.05, 0.08],
+        "nms_thresholds": [0.45, 0.5, 0.6],
     },
     "ema": {
         "enabled": True,
@@ -93,7 +113,7 @@ def load_config(path: str | Path | None) -> dict[str, Any]:
 
 
 def get_anchors(config: dict[str, Any]) -> list[list[tuple[float, float]]]:
-    anchors = config["anchors"]
+    anchors = config["anchors"].get("values", config["anchors"]) if isinstance(config["anchors"], dict) else config["anchors"]
     if anchors and anchors[0] and isinstance(anchors[0][0], (int, float)):
         return [[(float(w), float(h)) for w, h in anchors]]
     return [[(float(w), float(h)) for w, h in scale] for scale in anchors]

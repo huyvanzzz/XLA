@@ -21,6 +21,7 @@ configs/default.yaml
 Bạn có thể sửa trực tiếp file YAML này để đổi `image_size`, `epochs`, `batch_size`, `lr`, `anchors`, `loss_weights`, `conf_threshold`, `nms_threshold`.
 Mục `model` điều chỉnh backbone/head. Mặc định dùng ResNet50 pretrained ImageNet làm backbone, còn YOLO heads, auxiliary heads, loss, decode và NMS vẫn tự triển khai.
 Config cũng có các cơ chế chống overfit: random crop/scale augmentation, dropout trong detection head, freeze backbone vài epoch đầu, early stopping và EMA weights.
+Các cơ chế tối ưu mAP gồm auto anchors từ train annotations, focal objectness, IoU-aware objectness, class weights cho dữ liệu lệch lớp, multi-scale training, Soft-NMS và chọn `best.pth` theo `mAP@0.5`.
 
 Lệnh bắt buộc của đề:
 

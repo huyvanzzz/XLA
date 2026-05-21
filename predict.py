@@ -24,6 +24,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--classes", default="public/classes.json")
     parser.add_argument("--conf_threshold", type=float)
     parser.add_argument("--nms_threshold", type=float)
+    parser.add_argument("--nms_type", choices=["hard", "soft"])
     parser.add_argument("--max_detections", type=int)
     return parser.parse_args()
 
@@ -31,7 +32,7 @@ def parse_args() -> argparse.Namespace:
 def apply_config(args: argparse.Namespace) -> argparse.Namespace:
     config = load_config(args.config)
     inference = config["inference"]
-    for name in ["conf_threshold", "nms_threshold", "max_detections"]:
+    for name in ["conf_threshold", "nms_threshold", "nms_type", "max_detections"]:
         if getattr(args, name) is None:
             setattr(args, name, inference[name])
     return args
@@ -39,6 +40,9 @@ def apply_config(args: argparse.Namespace) -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    cli_conf_threshold = args.conf_threshold
+    cli_nms_threshold = args.nms_threshold
+    cli_nms_type = args.nms_type
     args = apply_config(args)
     image_dir = Path(args.image_dir)
     checkpoint_path = Path(args.checkpoint)
@@ -46,13 +50,19 @@ def main() -> None:
         raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}. Train first or pass --checkpoint.")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    checkpoint = torch.load(checkpoint_path, map_location=device)
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=True)
     config = load_config(args.config)
     classes = checkpoint.get("classes") or load_classes(args.classes)
     anchors = checkpoint.get("anchors") or get_anchors(config)
     image_size = int(checkpoint.get("image_size", config["image_size"]))
     model_config = dict(checkpoint.get("model_config", config["model"]))
     model_config["pretrained"] = False
+    if cli_conf_threshold is None:
+        args.conf_threshold = checkpoint.get("best_conf_threshold", args.conf_threshold)
+    if cli_nms_threshold is None:
+        args.nms_threshold = checkpoint.get("best_nms_threshold", args.nms_threshold)
+    if cli_nms_type is None:
+        args.nms_type = checkpoint.get("nms_type", args.nms_type)
 
     model = TinyDetector(num_classes=len(classes), num_anchors=[len(scale) for scale in anchors], **model_config).to(device)
     model.load_state_dict(checkpoint["model"])
@@ -73,6 +83,7 @@ def main() -> None:
                 orig_height=orig_h,
                 conf_threshold=args.conf_threshold,
                 nms_threshold=args.nms_threshold,
+                nms_type=args.nms_type,
                 max_detections=args.max_detections,
             )
             predictions.append({"image_id": image_path.name, "boxes": boxes})

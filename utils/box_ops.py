@@ -42,6 +42,44 @@ def nms(boxes: torch.Tensor, scores: torch.Tensor, iou_threshold: float) -> torc
     return torch.stack(keep).long()
 
 
+def soft_nms(
+    boxes: torch.Tensor,
+    scores: torch.Tensor,
+    iou_threshold: float,
+    sigma: float = 0.5,
+    score_threshold: float = 1e-3,
+) -> torch.Tensor:
+    if boxes.numel() == 0:
+        return torch.empty((0,), dtype=torch.long, device=boxes.device)
+
+    boxes_work = boxes.clone()
+    scores_work = scores.clone()
+    indices = torch.arange(scores.shape[0], device=boxes.device)
+    keep = []
+
+    while scores_work.numel() > 0:
+        max_pos = torch.argmax(scores_work)
+        keep.append(indices[max_pos])
+
+        current_box = boxes_work[max_pos].unsqueeze(0)
+        boxes_work = torch.cat([boxes_work[:max_pos], boxes_work[max_pos + 1 :]], dim=0)
+        remaining_scores = torch.cat([scores_work[:max_pos], scores_work[max_pos + 1 :]], dim=0)
+        indices = torch.cat([indices[:max_pos], indices[max_pos + 1 :]], dim=0)
+        if boxes_work.numel() == 0:
+            break
+
+        ious = box_iou(current_box, boxes_work).squeeze(0)
+        decay = torch.exp(-((ious * ious) / sigma))
+        decay = torch.where(ious > iou_threshold, decay, torch.ones_like(decay))
+        scores_work = remaining_scores * decay
+        valid = scores_work >= score_threshold
+        boxes_work = boxes_work[valid]
+        scores_work = scores_work[valid]
+        indices = indices[valid]
+
+    return torch.stack(keep).long() if keep else torch.empty((0,), dtype=torch.long, device=boxes.device)
+
+
 def clip_boxes(boxes: torch.Tensor, width: int, height: int) -> torch.Tensor:
     boxes[:, 0::2] = boxes[:, 0::2].clamp(0, width)
     boxes[:, 1::2] = boxes[:, 1::2].clamp(0, height)

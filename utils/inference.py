@@ -5,7 +5,7 @@ from pathlib import Path
 import torch
 from PIL import Image
 
-from utils.box_ops import clip_boxes, nms
+from utils.box_ops import clip_boxes, nms, soft_nms
 from utils.dataset import DetectionDataset
 
 
@@ -34,6 +34,7 @@ def decode_predictions(
     orig_height: int,
     conf_threshold: float = 0.25,
     nms_threshold: float = 0.5,
+    nms_type: str = "soft",
     max_detections: int = 100,
 ) -> list[dict[str, object]]:
     if isinstance(pred, dict):
@@ -76,7 +77,10 @@ def decode_predictions(
             continue
         class_boxes = boxes[class_mask]
         class_scores = scores[class_mask]
-        kept = nms(class_boxes, class_scores, nms_threshold)
+        if nms_type == "soft":
+            kept = soft_nms(class_boxes, class_scores, nms_threshold)
+        else:
+            kept = nms(class_boxes, class_scores, nms_threshold)
         for idx in kept:
             box = class_boxes[idx]
             if box[2] <= box[0] or box[3] <= box[1]:

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import json
 from copy import deepcopy
 from contextlib import nullcontext
+from collections import Counter
 import random
 from pathlib import Path
 
@@ -11,9 +13,12 @@ from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
 from models.tiny_detector import TinyDetector
+from public.tools.evaluate_predictions import evaluate, load_json, normalize_predictions, validate_ground_truth
 from utils.config import get_anchors, load_config
 from utils.dataset import DetectionDataset, collate_fn, load_classes
+from utils.inference import decode_predictions
 from utils.loss import YoloLoss
+from utils.box_ops import wh_iou
 
 
 def parse_args() -> argparse.Namespace:
@@ -40,6 +45,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--cls_weight", type=float)
     parser.add_argument("--iou_weight", type=float)
     parser.add_argument("--aux_weight", type=float)
+    parser.add_argument("--objectness_focal_gamma", type=float)
+    parser.add_argument("--iou_aware_objectness", action="store_true")
+    parser.add_argument("--no_iou_aware_objectness", action="store_true")
     parser.add_argument("--num_workers", type=int)
     parser.add_argument("--seed", type=int)
     return parser.parse_args()
@@ -61,13 +69,26 @@ def apply_config(args: argparse.Namespace) -> tuple[argparse.Namespace, list[lis
     ]:
         if getattr(args, name) is None:
             setattr(args, name, config[name])
-    for name in ["box_weight", "obj_weight", "noobj_weight", "cls_weight", "iou_weight", "aux_weight"]:
+    for name in [
+        "box_weight",
+        "obj_weight",
+        "noobj_weight",
+        "cls_weight",
+        "iou_weight",
+        "aux_weight",
+        "objectness_focal_gamma",
+        "iou_aware_objectness",
+    ]:
         if getattr(args, name) is None:
             setattr(args, name, loss_weights[name])
     if args.no_amp:
         args.amp = False
     elif not args.amp:
         args.amp = bool(config.get("amp", True))
+    if args.no_iou_aware_objectness:
+        args.iou_aware_objectness = False
+    elif not args.iou_aware_objectness:
+        args.iou_aware_objectness = bool(loss_weights.get("iou_aware_objectness", True))
     return args, get_anchors(config), config["model"], config
 
 
@@ -75,6 +96,49 @@ def seed_everything(seed: int) -> None:
     random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
+
+
+def compute_class_weights(annotation_path: str, classes: list[str]) -> list[float]:
+    with Path(annotation_path).open("r", encoding="utf-8") as f:
+        data = json.load(f)
+    counts = Counter(ann["class"] for ann in data["annotations"])
+    values = torch.tensor([float(counts.get(cls, 0) + 1) for cls in classes])
+    weights = 1.0 / torch.sqrt(values)
+    weights = weights / weights.mean().clamp(min=1e-6)
+    return [float(v) for v in weights.tolist()]
+
+
+def fit_auto_anchors(
+    annotation_path: str,
+    image_size: int,
+    per_scale: int = 3,
+    iters: int = 40,
+) -> list[list[tuple[float, float]]]:
+    with Path(annotation_path).open("r", encoding="utf-8") as f:
+        data = json.load(f)
+    image_info = {item["id"]: item for item in data["images"]}
+    wh_list = []
+    for ann in data["annotations"]:
+        image = image_info[ann["image_id"]]
+        x1, y1, x2, y2 = [float(v) for v in ann["bbox"]]
+        w = max(x2 - x1, 1.0) * image_size / float(image["width"])
+        h = max(y2 - y1, 1.0) * image_size / float(image["height"])
+        wh_list.append([w, h])
+    wh = torch.tensor(wh_list, dtype=torch.float32)
+    k = per_scale * 3
+    order = torch.randperm(wh.shape[0])[:k]
+    anchors = wh[order].clone()
+    for _ in range(iters):
+        assignment = wh_iou(anchors, wh).argmax(dim=0)
+        for idx in range(k):
+            selected = wh[assignment == idx]
+            if selected.numel() > 0:
+                anchors[idx] = selected.median(dim=0).values
+    anchors = anchors[anchors.prod(dim=1).argsort()]
+    return [
+        [(float(w), float(h)) for w, h in anchors[i * per_scale : (i + 1) * per_scale].tolist()]
+        for i in range(3)
+    ]
 
 
 class ModelEMA:
@@ -174,12 +238,111 @@ def run_epoch(
     return {key: value / max(steps, 1) for key, value in totals.items()}
 
 
+@torch.no_grad()
+def evaluate_map(
+    model: TinyDetector,
+    loader: DataLoader,
+    ground_truth_path: str,
+    classes: list[str],
+    anchors: list[list[tuple[float, float]]],
+    image_size: int,
+    device: torch.device,
+    conf_threshold: float,
+    nms_threshold: float,
+    nms_type: str,
+) -> dict[str, float]:
+    model.eval()
+    predictions = []
+    progress = tqdm(loader, desc="mAP eval", leave=False, dynamic_ncols=True)
+    for images, targets in progress:
+        images = images.to(device)
+        outputs = model(images)
+        for idx, target in enumerate(targets):
+            boxes = decode_predictions(
+                {"main": [scale[idx : idx + 1] for scale in outputs["main"]]},
+                classes=classes,
+                anchors=anchors,
+                image_size=image_size,
+                orig_width=int(target["orig_width"]),
+                orig_height=int(target["orig_height"]),
+                conf_threshold=conf_threshold,
+                nms_threshold=nms_threshold,
+                nms_type=nms_type,
+            )
+            predictions.append({"image_id": str(target["image_id"]), "boxes": boxes})
+
+    ground_truth = load_json(Path(ground_truth_path))
+    gt_classes, image_info = validate_ground_truth(ground_truth)
+    normalized = normalize_predictions(
+        predictions,
+        classes=gt_classes,
+        image_info=image_info,
+        max_detections_per_image=100,
+        require_complete=True,
+    )
+    result = evaluate(ground_truth, normalized, gt_classes, iou_threshold=0.5)
+    return {
+        "map50": float(result["mAP@0.5"]),
+        "precision": float(result["micro_precision"]),
+        "recall": float(result["micro_recall"]),
+        "conf_threshold": conf_threshold,
+        "nms_threshold": nms_threshold,
+    }
+
+
+def evaluate_map_with_optional_tuning(
+    model: TinyDetector,
+    loader: DataLoader,
+    ground_truth_path: str,
+    classes: list[str],
+    anchors: list[list[tuple[float, float]]],
+    image_size: int,
+    device: torch.device,
+    metric_config: dict,
+    epoch: int,
+) -> dict[str, float]:
+    should_tune = bool(metric_config.get("tune", False)) and epoch % int(metric_config.get("tune_every", 1)) == 0
+    conf_values = metric_config["conf_thresholds"] if should_tune else [metric_config["conf_threshold"]]
+    nms_values = metric_config["nms_thresholds"] if should_tune else [metric_config["nms_threshold"]]
+    best = None
+    for conf_threshold in conf_values:
+        for nms_threshold in nms_values:
+            result = evaluate_map(
+                model,
+                loader,
+                ground_truth_path,
+                classes,
+                anchors,
+                image_size,
+                device,
+                conf_threshold=float(conf_threshold),
+                nms_threshold=float(nms_threshold),
+                nms_type=str(metric_config.get("nms_type", "soft")),
+            )
+            if best is None or result["map50"] > best["map50"]:
+                best = result
+    assert best is not None
+    return best
+
+
 def main() -> None:
     args = parse_args()
     args, anchors, model_config, config = apply_config(args)
     seed_everything(args.seed)
 
     classes = load_classes(args.classes)
+    if isinstance(config["anchors"], dict) and config["anchors"].get("auto", False):
+        anchors = fit_auto_anchors(
+            args.train_data,
+            image_size=args.image_size,
+            per_scale=int(config["anchors"].get("per_scale", 3)),
+            iters=int(config["anchors"].get("kmeans_iters", 40)),
+        )
+        print(f"auto anchors: {anchors}")
+    class_weights = None
+    if config["class_weights"]["enabled"]:
+        class_weights = compute_class_weights(args.train_data, classes)
+        print(f"class weights: {class_weights}")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     checkpoint_dir = Path(args.checkpoint_dir)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
@@ -221,6 +384,9 @@ def main() -> None:
         cls_weight=args.cls_weight,
         iou_weight=args.iou_weight,
         aux_weight=args.aux_weight,
+        objectness_focal_gamma=args.objectness_focal_gamma,
+        iou_aware_objectness=args.iou_aware_objectness,
+        class_weights=class_weights,
         label_smoothing=args.label_smoothing,
     ).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
@@ -237,8 +403,17 @@ def main() -> None:
     early_stopping_patience = int(config["early_stopping_patience"])
 
     best_val = float("inf")
+    best_map = -1.0
     epochs_without_improvement = 0
     for epoch in range(1, args.epochs + 1):
+        if config["multi_scale"]["enabled"]:
+            train_size = int(random.choice(config["multi_scale"]["sizes"]))
+            train_set.image_size = train_size
+            criterion.image_size = train_size
+            print(f"multi-scale train image_size={train_size}")
+        else:
+            criterion.image_size = args.image_size
+
         freeze_backbone = epoch <= freeze_backbone_epochs
         set_backbone_frozen(model, freeze_backbone)
         if epoch == 1 and freeze_backbone:
@@ -260,6 +435,7 @@ def main() -> None:
             freeze_backbone=freeze_backbone,
         )
         eval_model = ema.module if ema is not None else model
+        criterion.image_size = args.image_size
         with torch.no_grad():
             val_logs = run_epoch(
                 eval_model,
@@ -283,6 +459,27 @@ def main() -> None:
             f"cls={val_logs['cls_loss']:.4f}"
         )
 
+        metric_logs = None
+        if config["validation_metric"]["enabled"]:
+            metric_logs = evaluate_map_with_optional_tuning(
+                eval_model,
+                val_loader,
+                args.val_data,
+                classes,
+                anchors,
+                args.image_size,
+                device,
+                config["validation_metric"],
+                epoch,
+            )
+            print(
+                f"val_mAP@0.5={metric_logs['map50']:.4f} "
+                f"precision={metric_logs['precision']:.4f} "
+                f"recall={metric_logs['recall']:.4f} "
+                f"conf={metric_logs['conf_threshold']:.2f} "
+                f"nms={metric_logs['nms_threshold']:.2f}"
+            )
+
         state = {
             "model": model.state_dict(),
             "raw_model": model.state_dict(),
@@ -297,6 +494,8 @@ def main() -> None:
                 "cls_weight": args.cls_weight,
                 "iou_weight": args.iou_weight,
                 "aux_weight": args.aux_weight,
+                "objectness_focal_gamma": args.objectness_focal_gamma,
+                "iou_aware_objectness": args.iou_aware_objectness,
             },
             "amp": args.amp,
             "label_smoothing": args.label_smoothing,
@@ -304,12 +503,24 @@ def main() -> None:
             "freeze_backbone_epochs": freeze_backbone_epochs,
             "epoch": epoch,
             "val_loss": val_logs["loss"],
+            "val_map50": metric_logs["map50"] if metric_logs is not None else None,
+            "best_conf_threshold": metric_logs["conf_threshold"] if metric_logs is not None else config["inference"]["conf_threshold"],
+            "best_nms_threshold": metric_logs["nms_threshold"] if metric_logs is not None else config["inference"]["nms_threshold"],
+            "nms_type": config["validation_metric"].get("nms_type", config["inference"].get("nms_type", "soft")),
         }
         if ema is not None:
             state["model"] = ema.module.state_dict()
         torch.save(state, checkpoint_dir / "last.pth")
-        if val_logs["loss"] < best_val:
+        improved = False
+        if metric_logs is not None:
+            improved = metric_logs["map50"] > best_map
+        else:
+            improved = val_logs["loss"] < best_val
+
+        if improved:
             best_val = val_logs["loss"]
+            if metric_logs is not None:
+                best_map = metric_logs["map50"]
             epochs_without_improvement = 0
             torch.save(state, checkpoint_dir / "best.pth")
             print(f"saved best checkpoint: {checkpoint_dir / 'best.pth'}")

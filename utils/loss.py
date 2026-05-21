@@ -21,6 +21,9 @@ class YoloLoss(nn.Module):
         cls_weight: float = 1.0,
         iou_weight: float = 1.5,
         aux_weight: float = 0.4,
+        objectness_focal_gamma: float = 1.5,
+        iou_aware_objectness: bool = True,
+        class_weights: list[float] | None = None,
         label_smoothing: float = 0.03,
     ) -> None:
         super().__init__()
@@ -33,7 +36,13 @@ class YoloLoss(nn.Module):
         self.cls_weight = cls_weight
         self.iou_weight = iou_weight
         self.aux_weight = aux_weight
+        self.objectness_focal_gamma = objectness_focal_gamma
+        self.iou_aware_objectness = iou_aware_objectness
         self.label_smoothing = label_smoothing
+        if class_weights is not None:
+            self.register_buffer("class_weights", torch.tensor(class_weights, dtype=torch.float32))
+        else:
+            self.class_weights = None
 
     def forward(
         self,
@@ -148,24 +157,27 @@ class YoloLoss(nn.Module):
                 ) / num_pos
                 decoded_boxes = self._decode_boxes(pred, anchors)
                 ious = box_iou(decoded_boxes[pos_mask], xyxy_targets[scale_idx][pos_mask]).diag()
+                if self.iou_aware_objectness:
+                    obj_target[pos_mask] = ious.detach().clamp(0.0, 1.0)
                 iou_loss = iou_loss + (1.0 - ious).sum() / num_pos
                 cls_loss = cls_loss + F.cross_entropy(
                     pred_cls_logit[pos_mask],
                     cls_targets[scale_idx][pos_mask],
                     reduction="sum",
+                    weight=self.class_weights,
                     label_smoothing=self.label_smoothing,
                 ) / num_pos
 
-            obj_loss = obj_loss + F.binary_cross_entropy_with_logits(
+            obj_loss = obj_loss + self._objectness_loss(
                 pred_obj_logit[pos_mask],
                 obj_target[pos_mask],
-                reduction="sum",
-            ) / num_pos
-            noobj_loss = noobj_loss + F.binary_cross_entropy_with_logits(
+                normalizer=num_pos,
+            )
+            noobj_loss = noobj_loss + self._objectness_loss(
                 pred_obj_logit[neg_mask],
                 obj_target[neg_mask],
-                reduction="sum",
-            ) / neg_mask.sum().clamp(min=1).float()
+                normalizer=neg_mask.sum().clamp(min=1).float(),
+            )
 
         num_scales = max(len(preds), 1)
         box_loss = box_loss / num_scales
@@ -190,6 +202,15 @@ class YoloLoss(nn.Module):
             "num_pos": float(total_pos.detach().cpu()),
         }
         return total, logs
+
+    def _objectness_loss(self, logits: torch.Tensor, targets: torch.Tensor, normalizer: torch.Tensor) -> torch.Tensor:
+        bce = F.binary_cross_entropy_with_logits(logits, targets, reduction="none")
+        if self.objectness_focal_gamma <= 0:
+            return bce.sum() / normalizer
+        probs = torch.sigmoid(logits)
+        pt = probs * targets + (1.0 - probs) * (1.0 - targets)
+        focal = (1.0 - pt).pow(self.objectness_focal_gamma)
+        return (focal * bce).sum() / normalizer
 
     def _decode_boxes(self, pred: torch.Tensor, anchors: torch.Tensor) -> torch.Tensor:
         _, grid_h, grid_w, _, _ = pred.shape
