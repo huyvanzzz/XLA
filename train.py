@@ -13,7 +13,6 @@ from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
 from models.tiny_detector import TinyDetector
-from public.tools.evaluate_predictions import evaluate, load_json, normalize_predictions, validate_ground_truth
 from utils.config import get_anchors, load_config
 from utils.dataset import DetectionDataset, collate_fn, load_classes
 from utils.inference import decode_predictions
@@ -139,6 +138,112 @@ def fit_auto_anchors(
         [(float(w), float(h)) for w, h in anchors[i * per_scale : (i + 1) * per_scale].tolist()]
         for i in range(3)
     ]
+
+
+def bbox_iou_list(box_a: list[float], box_b: list[float]) -> float:
+    ax1, ay1, ax2, ay2 = box_a
+    bx1, by1, bx2, by2 = box_b
+    inter_x1 = max(ax1, bx1)
+    inter_y1 = max(ay1, by1)
+    inter_x2 = min(ax2, bx2)
+    inter_y2 = min(ay2, by2)
+    inter = max(0.0, inter_x2 - inter_x1) * max(0.0, inter_y2 - inter_y1)
+    area_a = max(0.0, ax2 - ax1) * max(0.0, ay2 - ay1)
+    area_b = max(0.0, bx2 - bx1) * max(0.0, by2 - by1)
+    return inter / max(area_a + area_b - inter, 1e-6)
+
+
+def compute_ap(recalls: list[float], precisions: list[float]) -> float:
+    if not recalls:
+        return 0.0
+    mrec = [0.0] + recalls + [1.0]
+    mpre = [0.0] + precisions + [0.0]
+    for i in range(len(mpre) - 2, -1, -1):
+        mpre[i] = max(mpre[i], mpre[i + 1])
+    ap = 0.0
+    for i in range(1, len(mrec)):
+        if mrec[i] != mrec[i - 1]:
+            ap += (mrec[i] - mrec[i - 1]) * mpre[i]
+    return ap
+
+
+def evaluate_predictions_map(
+    ground_truth_path: str,
+    predictions: list[dict[str, object]],
+    classes: list[str],
+    iou_threshold: float = 0.5,
+) -> dict[str, float]:
+    with Path(ground_truth_path).open("r", encoding="utf-8") as f:
+        gt = json.load(f)
+    gt_by_class = {name: {} for name in classes}
+    for ann in gt["annotations"]:
+        class_name = ann["class"]
+        image_id = ann["image_id"]
+        gt_by_class[class_name].setdefault(image_id, []).append(
+            {"bbox": [float(v) for v in ann["bbox"]], "matched": False}
+        )
+
+    pred_by_class = {name: [] for name in classes}
+    for item in predictions:
+        image_id = str(item["image_id"])
+        for box in item["boxes"]:  # type: ignore[index]
+            pred_by_class[box["class"]].append(
+                {
+                    "image_id": image_id,
+                    "confidence": float(box["confidence"]),
+                    "bbox": [float(v) for v in box["bbox"]],
+                }
+            )
+
+    aps = []
+    total_tp = 0
+    total_fp = 0
+    total_gt = 0
+    for class_name in classes:
+        class_gt = gt_by_class[class_name]
+        num_gt = sum(len(v) for v in class_gt.values())
+        class_preds = sorted(pred_by_class[class_name], key=lambda x: x["confidence"], reverse=True)
+        tp_flags = []
+        fp_flags = []
+        for pred in class_preds:
+            candidates = class_gt.get(pred["image_id"], [])
+            best_iou = 0.0
+            best_idx = -1
+            for idx, candidate in enumerate(candidates):
+                if candidate["matched"]:
+                    continue
+                iou = bbox_iou_list(pred["bbox"], candidate["bbox"])
+                if iou > best_iou:
+                    best_iou = iou
+                    best_idx = idx
+            if best_idx >= 0 and best_iou >= iou_threshold:
+                candidates[best_idx]["matched"] = True
+                tp_flags.append(1)
+                fp_flags.append(0)
+            else:
+                tp_flags.append(0)
+                fp_flags.append(1)
+
+        tp_sum = 0
+        fp_sum = 0
+        recalls = []
+        precisions = []
+        for tp, fp in zip(tp_flags, fp_flags):
+            tp_sum += tp
+            fp_sum += fp
+            recalls.append(tp_sum / num_gt if num_gt else 0.0)
+            precisions.append(tp_sum / max(tp_sum + fp_sum, 1))
+        if num_gt:
+            aps.append(compute_ap(recalls, precisions))
+        total_tp += tp_sum
+        total_fp += fp_sum
+        total_gt += num_gt
+
+    return {
+        "map50": sum(aps) / len(aps) if aps else 0.0,
+        "precision": total_tp / max(total_tp + total_fp, 1),
+        "recall": total_tp / total_gt if total_gt else 0.0,
+    }
 
 
 class ModelEMA:
@@ -271,23 +376,10 @@ def evaluate_map(
             )
             predictions.append({"image_id": str(target["image_id"]), "boxes": boxes})
 
-    ground_truth = load_json(Path(ground_truth_path))
-    gt_classes, image_info = validate_ground_truth(ground_truth)
-    normalized = normalize_predictions(
-        predictions,
-        classes=gt_classes,
-        image_info=image_info,
-        max_detections_per_image=100,
-        require_complete=True,
-    )
-    result = evaluate(ground_truth, normalized, gt_classes, iou_threshold=0.5)
-    return {
-        "map50": float(result["mAP@0.5"]),
-        "precision": float(result["micro_precision"]),
-        "recall": float(result["micro_recall"]),
-        "conf_threshold": conf_threshold,
-        "nms_threshold": nms_threshold,
-    }
+    result = evaluate_predictions_map(ground_truth_path, predictions, classes, iou_threshold=0.5)
+    result["conf_threshold"] = conf_threshold
+    result["nms_threshold"] = nms_threshold
+    return result
 
 
 def evaluate_map_with_optional_tuning(
