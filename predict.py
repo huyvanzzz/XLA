@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 import torch
+from tqdm.auto import tqdm
 
 from models.tiny_detector import TinyDetector
 from utils.config import get_anchors, load_config
@@ -71,7 +72,7 @@ def main() -> None:
     image_paths = sorted(p for p in image_dir.iterdir() if p.suffix.lower() in IMAGE_EXTS)
     predictions = []
     with torch.no_grad():
-        for image_path in image_paths:
+        for image_path in tqdm(image_paths, desc="predict", dynamic_ncols=True):
             image_t, orig_w, orig_h = load_image_for_inference(image_path, image_size)
             pred = model(image_t.unsqueeze(0).to(device))
             boxes = decode_predictions(
