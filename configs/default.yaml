@@ -4,7 +4,7 @@ multi_scale:
   enabled: false
 epochs: 80
 batch_size: 24
-val_batch_size: 32
+val_batch_size: 64
 lr: 0.0001
 backbone_lr_mult: 0.2
 weight_decay: 0.0005
@@ -16,6 +16,7 @@ amp: true
 warmup_epochs: 3
 label_smoothing: 0.05
 freeze_backbone_epochs: 2
+backbone_trainable: layer4
 early_stopping_patience: 10
 
 validation_loss:

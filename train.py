@@ -316,16 +316,39 @@ class ModelEMA:
                 ema_value.copy_(model_value)
 
 
-def set_backbone_frozen(model: TinyDetector, frozen: bool) -> None:
-    head_prefixes = ("main_heads", "aux_heads")
+def _is_backbone_parameter(name: str) -> bool:
+    return name.startswith(("resnet", "stem", "down3", "down4", "down5", "elan3", "elan4", "elan5"))
+
+
+def _is_trainable_backbone_parameter(name: str, mode: str) -> bool:
+    if not _is_backbone_parameter(name):
+        return True
+    if mode == "none":
+        return False
+    if mode == "all":
+        return True
+    if name.startswith("resnet."):
+        if mode == "layer4":
+            return name.startswith("resnet.layer4")
+        if mode in {"layer3_layer4", "layer34"}:
+            return name.startswith(("resnet.layer3", "resnet.layer4"))
+        if mode in {"layer2_layer3_layer4", "layer234"}:
+            return name.startswith(("resnet.layer2", "resnet.layer3", "resnet.layer4"))
+        return False
+    return mode == "all"
+
+
+def set_backbone_trainable(model: TinyDetector, warmup_frozen: bool, trainable_mode: str) -> None:
     for name, parameter in model.named_parameters():
-        is_head = name.startswith(head_prefixes)
-        parameter.requires_grad_(is_head or not frozen)
+        if _is_backbone_parameter(name):
+            parameter.requires_grad_(False if warmup_frozen else _is_trainable_backbone_parameter(name, trainable_mode))
+        else:
+            parameter.requires_grad_(True)
 
 
 def set_frozen_feature_extractor_eval(model: TinyDetector) -> None:
     for name, module in model.named_children():
-        if name not in {"main_heads", "aux_heads"}:
+        if name in {"resnet", "stem", "down3", "down4", "down5", "elan3", "elan4", "elan5"}:
             module.eval()
 
 
@@ -613,6 +636,7 @@ def main() -> None:
     scaler = torch.amp.GradScaler("cuda", enabled=args.amp and device.type == "cuda")
     ema = ModelEMA(model, decay=float(config["ema"]["decay"])) if config["ema"]["enabled"] else None
     freeze_backbone_epochs = int(config["freeze_backbone_epochs"])
+    backbone_trainable = str(config.get("backbone_trainable", "layer4"))
     early_stopping_patience = int(config["early_stopping_patience"])
 
     use_map_for_best = bool(config["validation_metric"]["enabled"])
@@ -631,11 +655,11 @@ def main() -> None:
             criterion.image_size = args.image_size
 
         freeze_backbone = epoch <= freeze_backbone_epochs
-        set_backbone_frozen(model, freeze_backbone)
+        set_backbone_trainable(model, freeze_backbone, backbone_trainable)
         if epoch == 1 and freeze_backbone:
             print(f"freezing backbone for first {freeze_backbone_epochs} epoch(s)")
         if epoch == freeze_backbone_epochs + 1 and freeze_backbone_epochs > 0:
-            print("unfreezing backbone")
+            print(f"unfreezing backbone mode={backbone_trainable}")
 
         train_logs = run_epoch(
             model,
@@ -730,6 +754,7 @@ def main() -> None:
             "label_smoothing": args.label_smoothing,
             "ema_enabled": ema is not None,
             "freeze_backbone_epochs": freeze_backbone_epochs,
+            "backbone_trainable": backbone_trainable,
             "epoch": epoch,
             "val_loss": val_logs["loss"] if val_logs is not None else None,
             "val_map50": metric_logs["map50"] if metric_logs is not None else None,

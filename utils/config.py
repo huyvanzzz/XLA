@@ -23,6 +23,7 @@ DEFAULT_CONFIG = {
     "warmup_epochs": 3,
     "label_smoothing": 0.05,
     "freeze_backbone_epochs": 2,
+    "backbone_trainable": "layer4",
     "early_stopping_patience": 20,
     "validation_loss": {"enabled": False},
     "augmentation": {

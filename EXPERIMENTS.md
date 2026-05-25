@@ -38,6 +38,7 @@ Mô tả:
 - Dùng CIoU loss cho bbox decoded.
 - Objectness bias init với prior 0.01.
 - Optimizer AdamW chia param groups: backbone LR thấp hơn, không decay bias/BatchNorm/LayerNorm.
+- Sau warmup chỉ unfreeze `resnet.layer4`, không fine-tune toàn bộ backbone.
 - `val_batch_size` riêng, channels-last và CuDNN benchmark khi có CUDA.
 - Balanced image sampling để tăng tần suất ảnh chứa class khó/ít hơn.
 - Boost class weight cho `chair` vì kết quả trước có AP chair thấp nhất.
@@ -52,6 +53,8 @@ Config chính:
 - `val_batch_size: 32`
 - `lr: 0.0001`
 - `backbone_lr_mult: 0.2`
+- `freeze_backbone_epochs: 2`
+- `backbone_trainable: layer4`
 - `neck_channels: 192`
 - `head_channels: 192`
 - `attention_heads: 0`
