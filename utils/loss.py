@@ -26,6 +26,7 @@ class YoloLoss(nn.Module):
         class_weights: list[float] | None = None,
         label_smoothing: float = 0.03,
         positive_anchor_topk: int = 3,
+        ignore_anchor_iou: float = 0.5,
     ) -> None:
         super().__init__()
         self.anchors = [[(float(w), float(h)) for w, h in scale] for scale in anchors]
@@ -41,6 +42,7 @@ class YoloLoss(nn.Module):
         self.iou_aware_objectness = iou_aware_objectness
         self.label_smoothing = label_smoothing
         self.positive_anchor_topk = max(1, int(positive_anchor_topk))
+        self.ignore_anchor_iou = float(ignore_anchor_iou)
         if class_weights is not None:
             self.register_buffer("class_weights", torch.tensor(class_weights, dtype=torch.float32))
         else:
@@ -79,12 +81,14 @@ class YoloLoss(nn.Module):
         anchors_by_scale = [torch.tensor(scale, dtype=torch.float32, device=device) for scale in self.anchors]
 
         obj_targets: list[torch.Tensor] = []
+        ignore_masks: list[torch.Tensor] = []
         box_targets: list[torch.Tensor] = []
         xyxy_targets: list[torch.Tensor] = []
         cls_targets: list[torch.Tensor] = []
         for pred in preds:
             b, h, w, a, _ = pred.shape
             obj_targets.append(torch.zeros((b, h, w, a), device=device))
+            ignore_masks.append(torch.zeros((b, h, w, a), dtype=torch.bool, device=device))
             box_targets.append(torch.zeros((b, h, w, a, 4), device=device))
             xyxy_targets.append(torch.zeros((b, h, w, a, 4), device=device))
             cls_targets.append(torch.zeros((b, h, w, a), dtype=torch.long, device=device))
@@ -107,6 +111,7 @@ class YoloLoss(nn.Module):
             topk = min(self.positive_anchor_topk, flat_anchors.shape[0])
             best_flat_anchors = anchor_scores.topk(topk, dim=0).indices
             for obj_idx in range(boxes.shape[0]):
+                ignored_flat_anchors = (anchor_scores[:, obj_idx] >= self.ignore_anchor_iou).nonzero(as_tuple=False).flatten()
                 for flat_anchor_idx_t in best_flat_anchors[:, obj_idx]:
                     flat_anchor_idx = int(flat_anchor_idx_t.item())
                     scale_idx = max(i for i, start in enumerate(scale_offsets) if flat_anchor_idx >= start)
@@ -128,6 +133,19 @@ class YoloLoss(nn.Module):
                     box_targets[scale_idx][batch_idx, gy, gx, anchor_idx, 3] = torch.log(wh[obj_idx, 1] / anchor[1].clamp(min=1e-6))
                     xyxy_targets[scale_idx][batch_idx, gy, gx, anchor_idx] = boxes[obj_idx]
                     cls_targets[scale_idx][batch_idx, gy, gx, anchor_idx] = labels[obj_idx]
+                for flat_anchor_idx_t in ignored_flat_anchors:
+                    flat_anchor_idx = int(flat_anchor_idx_t.item())
+                    scale_idx = max(i for i, start in enumerate(scale_offsets) if flat_anchor_idx >= start)
+                    anchor_idx = flat_anchor_idx - scale_offsets[scale_idx]
+                    pred = preds[scale_idx]
+                    _, grid_h, grid_w, _, _ = pred.shape
+                    stride_x = self.image_size / grid_w
+                    stride_y = self.image_size / grid_h
+                    cell_x = (centers[obj_idx, 0] / stride_x).clamp(0, grid_w - 1e-4)
+                    cell_y = (centers[obj_idx, 1] / stride_y).clamp(0, grid_h - 1e-4)
+                    gx = cell_x.floor().long()
+                    gy = cell_y.floor().long()
+                    ignore_masks[scale_idx][batch_idx, gy, gx, anchor_idx] = True
 
         box_loss = preds[0].sum() * 0.0
         iou_loss = preds[0].sum() * 0.0
@@ -140,7 +158,7 @@ class YoloLoss(nn.Module):
             anchors = anchors_by_scale[scale_idx]
             obj_target = obj_targets[scale_idx]
             pos_mask = obj_target == 1
-            neg_mask = obj_target == 0
+            neg_mask = (obj_target == 0) & (~ignore_masks[scale_idx])
             num_pos = pos_mask.sum().clamp(min=1).float()
             total_pos += pos_mask.sum().float()
 

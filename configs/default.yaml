@@ -11,7 +11,7 @@ amp: true
 warmup_epochs: 3
 label_smoothing: 0.05
 freeze_backbone_epochs: 2
-early_stopping_patience: 20
+early_stopping_patience: 10
 
 validation_loss:
   enabled: false
@@ -54,8 +54,9 @@ loss_weights:
   iou_weight: 2.0
   aux_weight: 0.4
   objectness_focal_gamma: 1.5
-  iou_aware_objectness: true
+  iou_aware_objectness: false
   positive_anchor_topk: 3
+  ignore_anchor_iou: 0.5
 
 inference:
   conf_threshold: 0.08

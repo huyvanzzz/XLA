@@ -46,6 +46,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--aux_weight", type=float)
     parser.add_argument("--objectness_focal_gamma", type=float)
     parser.add_argument("--positive_anchor_topk", type=int)
+    parser.add_argument("--ignore_anchor_iou", type=float)
     parser.add_argument("--iou_aware_objectness", action="store_true")
     parser.add_argument("--no_iou_aware_objectness", action="store_true")
     parser.add_argument("--num_workers", type=int)
@@ -78,6 +79,7 @@ def apply_config(args: argparse.Namespace) -> tuple[argparse.Namespace, list[lis
         "aux_weight",
         "objectness_focal_gamma",
         "positive_anchor_topk",
+        "ignore_anchor_iou",
         "iou_aware_objectness",
     ]:
         if getattr(args, name) is None:
@@ -489,6 +491,7 @@ def main() -> None:
         class_weights=class_weights,
         label_smoothing=args.label_smoothing,
         positive_anchor_topk=args.positive_anchor_topk,
+        ignore_anchor_iou=args.ignore_anchor_iou,
     ).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     def lr_lambda(epoch: int) -> float:
@@ -606,6 +609,7 @@ def main() -> None:
                 "objectness_focal_gamma": args.objectness_focal_gamma,
                 "iou_aware_objectness": args.iou_aware_objectness,
                 "positive_anchor_topk": args.positive_anchor_topk,
+                "ignore_anchor_iou": args.ignore_anchor_iou,
             },
             "amp": args.amp,
             "label_smoothing": args.label_smoothing,

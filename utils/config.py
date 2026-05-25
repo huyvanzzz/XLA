@@ -57,8 +57,9 @@ DEFAULT_CONFIG = {
         "iou_weight": 2.0,
         "aux_weight": 0.4,
         "objectness_focal_gamma": 1.5,
-        "iou_aware_objectness": True,
+        "iou_aware_objectness": False,
         "positive_anchor_topk": 3,
+        "ignore_anchor_iou": 0.5,
     },
     "inference": {
         "conf_threshold": 0.08,
