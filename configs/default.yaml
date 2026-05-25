@@ -1,7 +1,6 @@
 image_size: 512
 multi_scale:
-  enabled: true
-  sizes: [416, 448, 480, 512, 544]
+  enabled: false
 epochs: 80
 batch_size: 16
 lr: 0.0001
