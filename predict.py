@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 
 import torch
-from tqdm.auto import tqdm
+from tqdm import tqdm
 
 from models.tiny_detector import TinyDetector
 from utils.config import get_anchors, load_config
@@ -27,6 +28,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--nms_threshold", type=float)
     parser.add_argument("--nms_type", choices=["hard", "soft"])
     parser.add_argument("--max_detections", type=int)
+    parser.add_argument("--batch_size", type=int, default=16)
     return parser.parse_args()
 
 
@@ -71,23 +73,34 @@ def main() -> None:
 
     image_paths = sorted(p for p in image_dir.iterdir() if p.suffix.lower() in IMAGE_EXTS)
     predictions = []
-    with torch.no_grad():
-        for image_path in tqdm(image_paths, desc="predict", dynamic_ncols=True):
-            image_t, orig_w, orig_h = load_image_for_inference(image_path, image_size)
-            pred = model(image_t.unsqueeze(0).to(device))
-            boxes = decode_predictions(
-                pred,
-                classes=classes,
-                anchors=anchors,
-                image_size=image_size,
-                orig_width=orig_w,
-                orig_height=orig_h,
-                conf_threshold=args.conf_threshold,
-                nms_threshold=args.nms_threshold,
-                nms_type=args.nms_type,
-                max_detections=args.max_detections,
-            )
-            predictions.append({"image_id": image_path.name, "boxes": boxes})
+    batch_size = max(1, int(args.batch_size))
+    progress = tqdm(total=len(image_paths), desc="predict", unit="img", dynamic_ncols=True, file=sys.stdout)
+    with torch.no_grad(), progress:
+        for start in range(0, len(image_paths), batch_size):
+            batch_paths = image_paths[start : start + batch_size]
+            batch_images = []
+            image_sizes = []
+            for image_path in batch_paths:
+                image_t, orig_w, orig_h = load_image_for_inference(image_path, image_size)
+                batch_images.append(image_t)
+                image_sizes.append((orig_w, orig_h))
+
+            pred = model(torch.stack(batch_images, dim=0).to(device))
+            for idx, (image_path, (orig_w, orig_h)) in enumerate(zip(batch_paths, image_sizes)):
+                boxes = decode_predictions(
+                    {"main": [scale[idx : idx + 1] for scale in pred["main"]]},
+                    classes=classes,
+                    anchors=anchors,
+                    image_size=image_size,
+                    orig_width=orig_w,
+                    orig_height=orig_h,
+                    conf_threshold=args.conf_threshold,
+                    nms_threshold=args.nms_threshold,
+                    nms_type=args.nms_type,
+                    max_detections=args.max_detections,
+                )
+                predictions.append({"image_id": image_path.name, "boxes": boxes})
+            progress.update(len(batch_paths))
 
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True) if output_path.parent != Path("") else None

@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m py_compile predict.py)",
+      "Bash(python predict.py --image_dir ./public/val/images --output ./tmp_val_predictions.json --checkpoint ./models/best.pth --config ./configs/default.yaml --batch_size 2 --max_detections 5)"
+    ]
+  }
+}
