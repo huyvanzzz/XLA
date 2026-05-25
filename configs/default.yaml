@@ -3,7 +3,7 @@ multi_scale:
   enabled: true
   sizes: [416, 448, 480, 512, 544]
 epochs: 80
-batch_size: 6
+batch_size: 16
 lr: 0.0001
 weight_decay: 0.0005
 num_workers: 2
