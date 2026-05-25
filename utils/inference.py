@@ -37,6 +37,7 @@ def decode_predictions(
     nms_type: str = "hard",
     max_detections: int = 100,
     pre_nms_topk: int = 1000,
+    class_pre_nms_topk: int = 100,
 ) -> list[dict[str, object]]:
     if isinstance(pred, dict):
         preds = pred["main"]
@@ -83,6 +84,9 @@ def decode_predictions(
             continue
         class_boxes = boxes[class_mask]
         class_scores = scores[class_mask]
+        if class_pre_nms_topk > 0 and class_scores.numel() > class_pre_nms_topk:
+            class_scores, class_top_idx = class_scores.topk(class_pre_nms_topk)
+            class_boxes = class_boxes[class_top_idx]
         if nms_type == "soft":
             kept = soft_nms(class_boxes, class_scores, nms_threshold)
         else:

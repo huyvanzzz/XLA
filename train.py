@@ -358,6 +358,7 @@ def evaluate_map(
     nms_threshold: float,
     nms_type: str,
     pre_nms_topk: int,
+    class_pre_nms_topk: int,
 ) -> dict[str, float]:
     model.eval()
     predictions = []
@@ -377,6 +378,7 @@ def evaluate_map(
                 nms_threshold=nms_threshold,
                 nms_type=nms_type,
                 pre_nms_topk=pre_nms_topk,
+                class_pre_nms_topk=class_pre_nms_topk,
             )
             predictions.append({"image_id": str(target["image_id"]), "boxes": boxes})
 
@@ -415,6 +417,7 @@ def evaluate_map_with_optional_tuning(
                 nms_threshold=float(nms_threshold),
                 nms_type=str(metric_config.get("nms_type", "soft")),
                 pre_nms_topk=int(metric_config.get("pre_nms_topk", 1000)),
+                class_pre_nms_topk=int(metric_config.get("class_pre_nms_topk", 100)),
             )
             if best is None or result["map50"] > best["map50"]:
                 best = result
@@ -501,6 +504,9 @@ def main() -> None:
     early_stopping_patience = int(config["early_stopping_patience"])
 
     use_map_for_best = bool(config["validation_metric"]["enabled"])
+    use_val_loss = bool(config.get("validation_loss", {}).get("enabled", not use_map_for_best))
+    if not use_map_for_best and not use_val_loss:
+        raise ValueError("Enable validation_metric or validation_loss so best checkpoint can be selected.")
     best_score = float("-inf") if use_map_for_best else float("inf")
     epochs_without_improvement = 0
     for epoch in range(1, args.epochs + 1):
@@ -534,28 +540,31 @@ def main() -> None:
         )
         eval_model = ema.module if ema is not None else model
         criterion.image_size = args.image_size
-        with torch.no_grad():
-            val_logs = run_epoch(
-                eval_model,
-                val_loader,
-                criterion,
-                device,
-                use_amp=args.amp,
-                epoch=epoch,
-                total_epochs=args.epochs,
-            )
+        val_logs = None
+        if use_val_loss:
+            with torch.no_grad():
+                val_logs = run_epoch(
+                    eval_model,
+                    val_loader,
+                    criterion,
+                    device,
+                    use_amp=args.amp,
+                    epoch=epoch,
+                    total_epochs=args.epochs,
+                )
         scheduler.step()
 
-        print(
-            f"epoch {epoch:03d}/{args.epochs} "
-            f"train_loss={train_logs['loss']:.4f} "
-            f"val_loss={val_logs['loss']:.4f} "
-            f"box={val_logs['box_loss']:.4f} "
-            f"iou={val_logs['iou_loss']:.4f} "
-            f"obj={val_logs['obj_loss']:.4f} "
-            f"noobj={val_logs['noobj_loss']:.4f} "
-            f"cls={val_logs['cls_loss']:.4f}"
-        )
+        log_line = f"epoch {epoch:03d}/{args.epochs} train_loss={train_logs['loss']:.4f}"
+        if val_logs is not None:
+            log_line += (
+                f" val_loss={val_logs['loss']:.4f} "
+                f"box={val_logs['box_loss']:.4f} "
+                f"iou={val_logs['iou_loss']:.4f} "
+                f"obj={val_logs['obj_loss']:.4f} "
+                f"noobj={val_logs['noobj_loss']:.4f} "
+                f"cls={val_logs['cls_loss']:.4f}"
+            )
+        print(log_line)
 
         metric_logs = None
         metric_every = max(1, int(config["validation_metric"].get("every", 1)))
@@ -603,12 +612,13 @@ def main() -> None:
             "ema_enabled": ema is not None,
             "freeze_backbone_epochs": freeze_backbone_epochs,
             "epoch": epoch,
-            "val_loss": val_logs["loss"],
+            "val_loss": val_logs["loss"] if val_logs is not None else None,
             "val_map50": metric_logs["map50"] if metric_logs is not None else None,
             "best_conf_threshold": metric_logs["conf_threshold"] if metric_logs is not None else config["inference"]["conf_threshold"],
             "best_nms_threshold": metric_logs["nms_threshold"] if metric_logs is not None else config["inference"]["nms_threshold"],
             "nms_type": config["validation_metric"].get("nms_type", config["inference"].get("nms_type", "soft")),
             "pre_nms_topk": config["validation_metric"].get("pre_nms_topk", config["inference"].get("pre_nms_topk", 1000)),
+            "class_pre_nms_topk": config["validation_metric"].get("class_pre_nms_topk", config["inference"].get("class_pre_nms_topk", 100)),
         }
         if ema is not None:
             state["model"] = ema.module.state_dict()

@@ -6,13 +6,16 @@ epochs: 80
 batch_size: 16
 lr: 0.0001
 weight_decay: 0.0005
-num_workers: 2
+num_workers: 2                                                                                                                        
 seed: 42
 amp: true
 warmup_epochs: 3
 label_smoothing: 0.05
 freeze_backbone_epochs: 2
 early_stopping_patience: 20
+
+validation_loss:
+  enabled: false
 
 augmentation:
   random_crop_prob: 0.2
@@ -61,14 +64,16 @@ inference:
   nms_type: hard
   max_detections: 100
   pre_nms_topk: 300
+  class_pre_nms_topk: 100
 
 validation_metric:
   enabled: true
-  every: 5
+  every: 1
   conf_threshold: 0.08
   nms_threshold: 0.5
   nms_type: hard
   pre_nms_topk: 300
+  class_pre_nms_topk: 100
   tune: false
   tune_every: 10
   conf_thresholds: [0.05, 0.08, 0.12]

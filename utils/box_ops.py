@@ -2,11 +2,6 @@ from __future__ import annotations
 
 import torch
 
-try:
-    from torchvision.ops import nms as torchvision_nms
-except Exception:
-    torchvision_nms = None
-
 
 def box_iou(boxes1: torch.Tensor, boxes2: torch.Tensor) -> torch.Tensor:
     if boxes1.numel() == 0 or boxes2.numel() == 0:
@@ -34,8 +29,6 @@ def wh_iou(anchor_wh: torch.Tensor, gt_wh: torch.Tensor) -> torch.Tensor:
 def nms(boxes: torch.Tensor, scores: torch.Tensor, iou_threshold: float) -> torch.Tensor:
     if boxes.numel() == 0:
         return torch.empty((0,), dtype=torch.long, device=boxes.device)
-    if torchvision_nms is not None:
-        return torchvision_nms(boxes, scores, iou_threshold).long()
 
     order = scores.argsort(descending=True)
     keep: list[torch.Tensor] = []
