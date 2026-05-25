@@ -9,7 +9,7 @@ import random
 from pathlib import Path
 
 import torch
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, WeightedRandomSampler
 from tqdm.auto import tqdm
 
 from models.tiny_detector import TinyDetector
@@ -49,6 +49,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--objectness_focal_gamma", type=float)
     parser.add_argument("--positive_anchor_topk", type=int)
     parser.add_argument("--ignore_anchor_iou", type=float)
+    parser.add_argument("--objectness_iou_mix", type=float)
     parser.add_argument("--iou_aware_objectness", action="store_true")
     parser.add_argument("--no_iou_aware_objectness", action="store_true")
     parser.add_argument("--num_workers", type=int)
@@ -84,6 +85,7 @@ def apply_config(args: argparse.Namespace) -> tuple[argparse.Namespace, list[lis
         "objectness_focal_gamma",
         "positive_anchor_topk",
         "ignore_anchor_iou",
+        "objectness_iou_mix",
         "iou_aware_objectness",
     ]:
         if getattr(args, name) is None:
@@ -113,6 +115,42 @@ def compute_class_weights(annotation_path: str, classes: list[str]) -> list[floa
     weights = 1.0 / torch.sqrt(values)
     weights = weights / weights.mean().clamp(min=1e-6)
     return [float(v) for v in weights.tolist()]
+
+
+def apply_class_weight_overrides(weights: list[float], classes: list[str], overrides: dict[str, float] | None) -> list[float]:
+    if not overrides:
+        return weights
+    updated = list(weights)
+    for class_name, value in overrides.items():
+        if class_name in classes:
+            updated[classes.index(class_name)] = float(value)
+    values = torch.tensor(updated, dtype=torch.float32)
+    values = values / values.mean().clamp(min=1e-6)
+    return [float(v) for v in values.tolist()]
+
+
+def build_balanced_sampler(dataset: DetectionDataset, classes: list[str], config: dict) -> WeightedRandomSampler | None:
+    if not bool(config.get("enabled", False)):
+        return None
+    counts = Counter()
+    for item in dataset.images:
+        counts.update({ann["class"] for ann in item["annotations"]})
+    power = float(config.get("power", 0.5))
+    empty_weight = float(config.get("empty_weight", 0.35))
+    class_weight = {
+        class_name: (1.0 / max(float(counts.get(class_name, 1)), 1.0)) ** power
+        for class_name in classes
+    }
+    weights = []
+    for item in dataset.images:
+        labels = {ann["class"] for ann in item["annotations"]}
+        if labels:
+            weights.append(max(class_weight[label] for label in labels))
+        else:
+            weights.append(empty_weight * min(class_weight.values()))
+    sample_weights = torch.tensor(weights, dtype=torch.double)
+    sample_weights = sample_weights / sample_weights.mean().clamp(min=1e-12)
+    return WeightedRandomSampler(sample_weights, num_samples=len(sample_weights), replacement=True)
 
 
 def fit_auto_anchors(
@@ -368,6 +406,7 @@ def evaluate_map(
     image_size: int,
     device: torch.device,
     conf_threshold: float,
+    class_conf_thresholds: dict[str, float] | None,
     nms_threshold: float,
     nms_type: str,
     pre_nms_topk: int,
@@ -390,6 +429,7 @@ def evaluate_map(
                 orig_width=int(target["orig_width"]),
                 orig_height=int(target["orig_height"]),
                 conf_threshold=conf_threshold,
+                class_conf_thresholds=class_conf_thresholds,
                 nms_threshold=nms_threshold,
                 nms_type=nms_type,
                 pre_nms_topk=pre_nms_topk,
@@ -430,6 +470,7 @@ def evaluate_map_with_optional_tuning(
                 image_size,
                 device,
                 conf_threshold=float(conf_threshold),
+                class_conf_thresholds=metric_config.get("class_conf_thresholds", {}),
                 nms_threshold=float(nms_threshold),
                 nms_type=str(metric_config.get("nms_type", "soft")),
                 pre_nms_topk=int(metric_config.get("pre_nms_topk", 1000)),
@@ -467,6 +508,7 @@ def main() -> None:
     class_weights = None
     if config["class_weights"]["enabled"]:
         class_weights = compute_class_weights(args.train_data, classes)
+        class_weights = apply_class_weight_overrides(class_weights, classes, config["class_weights"].get("overrides"))
         print(f"class weights: {class_weights}")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     checkpoint_dir = Path(args.checkpoint_dir)
@@ -489,10 +531,14 @@ def main() -> None:
         augment=False,
         preserve_aspect=preserve_aspect,
     )
+    train_sampler = build_balanced_sampler(train_set, classes, config.get("balanced_sampling", {}))
+    if train_sampler is not None:
+        print("balanced sampling: enabled")
     train_loader = DataLoader(
         train_set,
         batch_size=args.batch_size,
-        shuffle=True,
+        shuffle=train_sampler is None,
+        sampler=train_sampler,
         num_workers=args.num_workers,
         collate_fn=collate_fn,
         pin_memory=torch.cuda.is_available(),
@@ -527,6 +573,7 @@ def main() -> None:
         label_smoothing=args.label_smoothing,
         positive_anchor_topk=args.positive_anchor_topk,
         ignore_anchor_iou=args.ignore_anchor_iou,
+        objectness_iou_mix=args.objectness_iou_mix,
     ).to(device)
     decay_backbone = []
     decay_detector = []
@@ -675,6 +722,7 @@ def main() -> None:
                 "iou_aware_objectness": args.iou_aware_objectness,
                 "positive_anchor_topk": args.positive_anchor_topk,
                 "ignore_anchor_iou": args.ignore_anchor_iou,
+                "objectness_iou_mix": args.objectness_iou_mix,
             },
             "lr": args.lr,
             "backbone_lr_mult": args.backbone_lr_mult,

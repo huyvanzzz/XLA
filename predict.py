@@ -102,6 +102,7 @@ def main() -> None:
                     orig_width=orig_w,
                     orig_height=orig_h,
                     conf_threshold=args.conf_threshold,
+                    class_conf_thresholds=config["inference"].get("class_conf_thresholds", {}),
                     nms_threshold=args.nms_threshold,
                     nms_type=args.nms_type,
                     max_detections=args.max_detections,

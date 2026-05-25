@@ -44,6 +44,7 @@ def decode_predictions(
     orig_width: int,
     orig_height: int,
     conf_threshold: float = 0.25,
+    class_conf_thresholds: dict[str, float] | None = None,
     nms_threshold: float = 0.5,
     nms_type: str = "hard",
     max_detections: int = 100,
@@ -85,7 +86,14 @@ def decode_predictions(
     boxes = torch.cat(all_boxes, dim=0)
     scores = torch.cat(all_scores, dim=0)
     labels = torch.cat(all_labels, dim=0)
-    keep = scores >= conf_threshold
+    if class_conf_thresholds:
+        thresholds = torch.full_like(scores, float(conf_threshold))
+        for label_idx, class_name in enumerate(classes):
+            if class_name in class_conf_thresholds:
+                thresholds[labels == label_idx] = float(class_conf_thresholds[class_name])
+        keep = scores >= thresholds
+    else:
+        keep = scores >= conf_threshold
     boxes = boxes[keep]
     scores = scores[keep]
     labels = labels[keep]

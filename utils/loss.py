@@ -27,6 +27,7 @@ class YoloLoss(nn.Module):
         label_smoothing: float = 0.03,
         positive_anchor_topk: int = 3,
         ignore_anchor_iou: float = 0.5,
+        objectness_iou_mix: float = 0.25,
     ) -> None:
         super().__init__()
         self.anchors = [[(float(w), float(h)) for w, h in scale] for scale in anchors]
@@ -43,6 +44,7 @@ class YoloLoss(nn.Module):
         self.label_smoothing = label_smoothing
         self.positive_anchor_topk = max(1, int(positive_anchor_topk))
         self.ignore_anchor_iou = float(ignore_anchor_iou)
+        self.objectness_iou_mix = min(max(float(objectness_iou_mix), 0.0), 1.0)
         if class_weights is not None:
             self.register_buffer("class_weights", torch.tensor(class_weights, dtype=torch.float32))
         else:
@@ -183,7 +185,8 @@ class YoloLoss(nn.Module):
                 target_pos_boxes = xyxy_targets[scale_idx][pos_mask]
                 ious = box_iou(pred_pos_boxes, target_pos_boxes).diag()
                 if self.iou_aware_objectness:
-                    obj_target[pos_mask] = ious.detach().clamp(0.0, 1.0)
+                    quality = ious.detach().clamp(0.0, 1.0)
+                    obj_target[pos_mask] = (1.0 - self.objectness_iou_mix) + self.objectness_iou_mix * quality
                 ciou = bbox_ciou(pred_pos_boxes, target_pos_boxes)
                 iou_loss = iou_loss + (1.0 - ciou).sum() / num_pos
                 cls_loss = cls_loss + F.cross_entropy(
