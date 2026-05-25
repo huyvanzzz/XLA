@@ -19,7 +19,7 @@ configs/default.yaml
 ```
 
 Bạn có thể sửa trực tiếp file YAML này để đổi `image_size`, `epochs`, `batch_size`, `lr`, `anchors`, `loss_weights`, `conf_threshold`, `nms_threshold`.
-Mục `model` điều chỉnh backbone/neck/head. Mặc định dùng ResNet50 pretrained ImageNet làm backbone, còn FPN/PAN neck, attention/context blocks, YOLO heads, auxiliary heads, loss, decode và NMS vẫn tự triển khai.
+Mục `model` điều chỉnh backbone/neck/head. Mặc định dùng ResNet50 pretrained ImageNet làm backbone, còn FPN/PAN neck, context blocks, YOLO heads, auxiliary heads, loss, decode và NMS vẫn tự triển khai.
 Config cũng có các cơ chế chống overfit: random crop/scale augmentation, dropout trong neck/head, freeze backbone vài epoch đầu, early stopping theo mAP và EMA weights.
 Các cơ chế tối ưu mAP gồm auto anchors từ train annotations, one-to-many top-k anchor assignment, focal objectness, IoU-aware objectness, class weights cho dữ liệu lệch lớp, multi-scale training, hard NMS tự cài theo lớp với pre-NMS top-k và chọn `best.pth` theo `mAP@0.5`.
 
@@ -87,7 +87,8 @@ python public/tools/evaluate_predictions.py \
 
 - Backbone mặc định là ResNet50 pretrained ImageNet. Kiến trúc ResNet50 được cài trong repo và tải weight bằng `torch.hub`, không phụ thuộc `torchvision`.
 - Có thể đổi `model.backbone: eelan` và `pretrained: false` để dùng E-ELAN-like CNN tự viết.
-- Neck FPN/PAN fuse 3 scale stride 8/16/32 từ backbone, có SPP, large-kernel depthwise context và partial self-attention ở tầng sâu.
+- Ảnh được letterbox về `512x512` để giữ tỉ lệ gốc, tránh làm méo object; bbox được scale/pad tương ứng.
+- Neck FPN/PAN fuse 3 scale stride 8/16/32 từ backbone, có SPP và large-kernel depthwise context ở tầng sâu.
 - Detection head dự đoán trên 3 scale stride 8/16/32, tức ảnh `512x512` cho feature maps `64x64`, `32x32`, `16x16`.
 - Có auxiliary heads dùng khi train theo tinh thần trainable bag-of-freebies; inference chỉ dùng main heads.
 - Mỗi scale có 3 anchors, cấu hình trong `configs/default.yaml`.
@@ -102,7 +103,7 @@ python public/tools/evaluate_predictions.py \
 Loss nằm trong `utils/loss.py`, được tách rõ thành các phần:
 
 - `box_loss`: Smooth L1 cho bbox của positive anchors.
-- `iou_loss`: `1 - IoU` trên bbox đã decode của positive anchors.
+- `iou_loss`: CIoU loss trên bbox đã decode của positive anchors.
 - `obj_loss`: BCEWithLogits cho anchor được gán object.
 - `noobj_loss`: BCEWithLogits cho background anchors.
 - `cls_loss`: Cross Entropy cho class của positive anchors.

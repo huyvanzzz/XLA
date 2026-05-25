@@ -1,11 +1,16 @@
 image_size: 512
+preserve_aspect: true
 multi_scale:
   enabled: false
 epochs: 80
-batch_size: 16
+batch_size: 24
+val_batch_size: 32
 lr: 0.0001
+backbone_lr_mult: 0.2
 weight_decay: 0.0005
-num_workers: 2                                                                                                                        
+num_workers: 2
+channels_last: true
+cudnn_benchmark: true
 seed: 42
 amp: true
 warmup_epochs: 3
@@ -27,9 +32,10 @@ model:
   backbone: resnet50
   pretrained: true
   base_channels: 40
-  head_channels: 256
-  neck_channels: 256
-  attention_heads: 4
+  head_channels: 192
+  neck_channels: 192
+  attention_heads: 0
+  objectness_prior: 0.01
   dropout: 0.1
   elan_depth: 2
   aux_head: true

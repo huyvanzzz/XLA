@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 import torch
 from torch import nn
 
@@ -131,11 +133,10 @@ class FPNPANNeck(nn.Module):
         self.lateral3 = ConvBNAct(in_channels[0], out_channels, kernel_size=1)
         self.lateral4 = ConvBNAct(in_channels[1], out_channels, kernel_size=1)
         self.lateral5 = ConvBNAct(in_channels[2], out_channels, kernel_size=1)
-        self.deep_context = nn.Sequential(
-            SPPBlock(out_channels),
-            LargeKernelBlock(out_channels, kernel_size=7),
-            PartialSelfAttention(out_channels, heads=attention_heads, ratio=0.5),
-        )
+        context_layers: list[nn.Module] = [SPPBlock(out_channels), LargeKernelBlock(out_channels, kernel_size=7)]
+        if attention_heads > 0:
+            context_layers.append(PartialSelfAttention(out_channels, heads=attention_heads, ratio=0.5))
+        self.deep_context = nn.Sequential(*context_layers)
         self.fuse4 = nn.Sequential(
             ConvBNAct(out_channels * 2, out_channels, kernel_size=1),
             ELANBlock(out_channels, out_channels, depth=2),
@@ -257,6 +258,15 @@ class DetectionHead(nn.Module):
         y = y.view(n, self.num_anchors, self.pred_dim, h, w)
         return y.permute(0, 3, 4, 1, 2).contiguous()
 
+    def initialize_biases(self, objectness_prior: float = 0.01) -> None:
+        final_conv = self.head[-1]
+        if not isinstance(final_conv, nn.Conv2d) or final_conv.bias is None:
+            return
+        prior = min(max(float(objectness_prior), 1e-4), 1.0 - 1e-4)
+        bias = final_conv.bias.view(self.num_anchors, self.pred_dim)
+        with torch.no_grad():
+            bias[:, 4].fill_(math.log(prior / (1.0 - prior)))
+
 
 class TinyDetector(nn.Module):
     """YOLO-style detector with configurable backbone, RepConv heads, aux heads, and 3 scales."""
@@ -269,6 +279,7 @@ class TinyDetector(nn.Module):
         head_channels: int = 256,
         neck_channels: int = 256,
         attention_heads: int = 4,
+        objectness_prior: float = 0.01,
         dropout: float = 0.05,
         elan_depth: int = 2,
         aux_head: bool = True,
@@ -326,6 +337,8 @@ class TinyDetector(nn.Module):
                 DetectionHead(feature_channels[2], head_channels // 2, self.num_anchors[2], self.pred_dim, dropout),
             ]
         )
+        for head in list(self.main_heads) + list(self.aux_heads):
+            head.initialize_biases(objectness_prior=objectness_prior)
 
     def forward(self, x: torch.Tensor) -> dict[str, list[torch.Tensor]]:
         if self.backbone_name == "resnet50":

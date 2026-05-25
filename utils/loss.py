@@ -4,7 +4,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from utils.box_ops import box_iou, wh_iou
+from utils.box_ops import bbox_ciou, box_iou, wh_iou
 
 
 class YoloLoss(nn.Module):
@@ -179,10 +179,13 @@ class YoloLoss(nn.Module):
                     reduction="sum",
                 ) / num_pos
                 decoded_boxes = self._decode_boxes(pred, anchors)
-                ious = box_iou(decoded_boxes[pos_mask], xyxy_targets[scale_idx][pos_mask]).diag()
+                pred_pos_boxes = decoded_boxes[pos_mask]
+                target_pos_boxes = xyxy_targets[scale_idx][pos_mask]
+                ious = box_iou(pred_pos_boxes, target_pos_boxes).diag()
                 if self.iou_aware_objectness:
                     obj_target[pos_mask] = ious.detach().clamp(0.0, 1.0)
-                iou_loss = iou_loss + (1.0 - ious).sum() / num_pos
+                ciou = bbox_ciou(pred_pos_boxes, target_pos_boxes)
+                iou_loss = iou_loss + (1.0 - ciou).sum() / num_pos
                 cls_loss = cls_loss + F.cross_entropy(
                     pred_cls_logit[pos_mask],
                     cls_targets[scale_idx][pos_mask],

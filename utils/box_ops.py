@@ -26,6 +26,43 @@ def wh_iou(anchor_wh: torch.Tensor, gt_wh: torch.Tensor) -> torch.Tensor:
     return inter / union.clamp(min=1e-6)
 
 
+def bbox_ciou(boxes1: torch.Tensor, boxes2: torch.Tensor) -> torch.Tensor:
+    """Complete IoU for aligned xyxy box tensors."""
+    if boxes1.numel() == 0 or boxes2.numel() == 0:
+        return boxes1.new_zeros((boxes1.shape[0],))
+
+    x1 = torch.max(boxes1[:, 0], boxes2[:, 0])
+    y1 = torch.max(boxes1[:, 1], boxes2[:, 1])
+    x2 = torch.min(boxes1[:, 2], boxes2[:, 2])
+    y2 = torch.min(boxes1[:, 3], boxes2[:, 3])
+    inter = (x2 - x1).clamp(min=0) * (y2 - y1).clamp(min=0)
+
+    w1 = (boxes1[:, 2] - boxes1[:, 0]).clamp(min=1e-6)
+    h1 = (boxes1[:, 3] - boxes1[:, 1]).clamp(min=1e-6)
+    w2 = (boxes2[:, 2] - boxes2[:, 0]).clamp(min=1e-6)
+    h2 = (boxes2[:, 3] - boxes2[:, 1]).clamp(min=1e-6)
+    area1 = w1 * h1
+    area2 = w2 * h2
+    iou = inter / (area1 + area2 - inter).clamp(min=1e-6)
+
+    cx1 = (boxes1[:, 0] + boxes1[:, 2]) * 0.5
+    cy1 = (boxes1[:, 1] + boxes1[:, 3]) * 0.5
+    cx2 = (boxes2[:, 0] + boxes2[:, 2]) * 0.5
+    cy2 = (boxes2[:, 1] + boxes2[:, 3]) * 0.5
+    center_dist = (cx1 - cx2).pow(2) + (cy1 - cy2).pow(2)
+
+    enc_x1 = torch.min(boxes1[:, 0], boxes2[:, 0])
+    enc_y1 = torch.min(boxes1[:, 1], boxes2[:, 1])
+    enc_x2 = torch.max(boxes1[:, 2], boxes2[:, 2])
+    enc_y2 = torch.max(boxes1[:, 3], boxes2[:, 3])
+    enc_diag = (enc_x2 - enc_x1).pow(2) + (enc_y2 - enc_y1).pow(2)
+
+    v = (4.0 / (torch.pi ** 2)) * (torch.atan(w2 / h2) - torch.atan(w1 / h1)).pow(2)
+    with torch.no_grad():
+        alpha = v / (1.0 - iou + v).clamp(min=1e-6)
+    return iou - center_dist / enc_diag.clamp(min=1e-6) - alpha * v
+
+
 def nms(boxes: torch.Tensor, scores: torch.Tensor, iou_threshold: float) -> torch.Tensor:
     if boxes.numel() == 0:
         return torch.empty((0,), dtype=torch.long, device=boxes.device)

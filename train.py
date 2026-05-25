@@ -32,7 +32,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--image_size", type=int)
     parser.add_argument("--epochs", type=int)
     parser.add_argument("--batch_size", type=int)
+    parser.add_argument("--val_batch_size", type=int)
     parser.add_argument("--lr", type=float)
+    parser.add_argument("--backbone_lr_mult", type=float)
     parser.add_argument("--weight_decay", type=float)
     parser.add_argument("--amp", action="store_true")
     parser.add_argument("--no_amp", action="store_true")
@@ -61,7 +63,9 @@ def apply_config(args: argparse.Namespace) -> tuple[argparse.Namespace, list[lis
         "image_size",
         "epochs",
         "batch_size",
+        "val_batch_size",
         "lr",
+        "backbone_lr_mult",
         "weight_decay",
         "num_workers",
         "seed",
@@ -116,6 +120,7 @@ def fit_auto_anchors(
     image_size: int,
     per_scale: int = 3,
     iters: int = 40,
+    preserve_aspect: bool = True,
 ) -> list[list[tuple[float, float]]]:
     with Path(annotation_path).open("r", encoding="utf-8") as f:
         data = json.load(f)
@@ -124,8 +129,13 @@ def fit_auto_anchors(
     for ann in data["annotations"]:
         image = image_info[ann["image_id"]]
         x1, y1, x2, y2 = [float(v) for v in ann["bbox"]]
-        w = max(x2 - x1, 1.0) * image_size / float(image["width"])
-        h = max(y2 - y1, 1.0) * image_size / float(image["height"])
+        if preserve_aspect:
+            scale = min(image_size / float(image["width"]), image_size / float(image["height"]))
+            w = max(x2 - x1, 1.0) * scale
+            h = max(y2 - y1, 1.0) * scale
+        else:
+            w = max(x2 - x1, 1.0) * image_size / float(image["width"])
+            h = max(y2 - y1, 1.0) * image_size / float(image["height"])
         wh_list.append([w, h])
     wh = torch.tensor(wh_list, dtype=torch.float32)
     k = per_scale * 3
@@ -293,6 +303,7 @@ def run_epoch(
     total_epochs: int = 0,
     ema: ModelEMA | None = None,
     freeze_backbone: bool = False,
+    channels_last: bool = False,
 ) -> dict[str, float]:
     training = optimizer is not None
     model.train(training)
@@ -309,7 +320,7 @@ def run_epoch(
     )
 
     for images, targets in progress:
-        images = images.to(device)
+        images = images.to(device, memory_format=torch.channels_last if channels_last else torch.contiguous_format)
         if training:
             optimizer.zero_grad(set_to_none=True)
 
@@ -361,12 +372,14 @@ def evaluate_map(
     nms_type: str,
     pre_nms_topk: int,
     class_pre_nms_topk: int,
+    preserve_aspect: bool,
+    channels_last: bool,
 ) -> dict[str, float]:
     model.eval()
     predictions = []
     progress = tqdm(loader, desc="mAP eval", leave=False, dynamic_ncols=True)
     for images, targets in progress:
-        images = images.to(device)
+        images = images.to(device, memory_format=torch.channels_last if channels_last else torch.contiguous_format)
         outputs = model(images)
         for idx, target in enumerate(targets):
             boxes = decode_predictions(
@@ -381,6 +394,7 @@ def evaluate_map(
                 nms_type=nms_type,
                 pre_nms_topk=pre_nms_topk,
                 class_pre_nms_topk=class_pre_nms_topk,
+                preserve_aspect=preserve_aspect,
             )
             predictions.append({"image_id": str(target["image_id"]), "boxes": boxes})
 
@@ -420,6 +434,8 @@ def evaluate_map_with_optional_tuning(
                 nms_type=str(metric_config.get("nms_type", "soft")),
                 pre_nms_topk=int(metric_config.get("pre_nms_topk", 1000)),
                 class_pre_nms_topk=int(metric_config.get("class_pre_nms_topk", 100)),
+                preserve_aspect=bool(metric_config.get("preserve_aspect", True)),
+                channels_last=bool(metric_config.get("channels_last", False)),
             )
             if best is None or result["map50"] > best["map50"]:
                 best = result
@@ -431,6 +447,12 @@ def main() -> None:
     args = parse_args()
     args, anchors, model_config, config = apply_config(args)
     seed_everything(args.seed)
+    preserve_aspect = bool(config.get("preserve_aspect", True))
+    config["validation_metric"]["preserve_aspect"] = preserve_aspect
+    channels_last = bool(config.get("channels_last", True)) and torch.cuda.is_available()
+    config["validation_metric"]["channels_last"] = channels_last
+    if bool(config.get("cudnn_benchmark", True)) and torch.cuda.is_available():
+        torch.backends.cudnn.benchmark = True
 
     classes = load_classes(args.classes)
     if isinstance(config["anchors"], dict) and config["anchors"].get("auto", False):
@@ -439,6 +461,7 @@ def main() -> None:
             image_size=args.image_size,
             per_scale=int(config["anchors"].get("per_scale", 3)),
             iters=int(config["anchors"].get("kmeans_iters", 40)),
+            preserve_aspect=preserve_aspect,
         )
         print(f"auto anchors: {anchors}")
     class_weights = None
@@ -456,8 +479,16 @@ def main() -> None:
         args.image_size,
         augment=True,
         augment_config=config["augmentation"],
+        preserve_aspect=preserve_aspect,
     )
-    val_set = DetectionDataset(args.val_data, args.val_image_dir, classes, args.image_size, augment=False)
+    val_set = DetectionDataset(
+        args.val_data,
+        args.val_image_dir,
+        classes,
+        args.image_size,
+        augment=False,
+        preserve_aspect=preserve_aspect,
+    )
     train_loader = DataLoader(
         train_set,
         batch_size=args.batch_size,
@@ -465,17 +496,21 @@ def main() -> None:
         num_workers=args.num_workers,
         collate_fn=collate_fn,
         pin_memory=torch.cuda.is_available(),
+        persistent_workers=args.num_workers > 0,
     )
     val_loader = DataLoader(
         val_set,
-        batch_size=args.batch_size,
+        batch_size=args.val_batch_size,
         shuffle=False,
         num_workers=args.num_workers,
         collate_fn=collate_fn,
         pin_memory=torch.cuda.is_available(),
+        persistent_workers=args.num_workers > 0,
     )
 
     model = TinyDetector(num_classes=len(classes), num_anchors=[len(scale) for scale in anchors], **model_config).to(device)
+    if channels_last:
+        model = model.to(memory_format=torch.channels_last)
     criterion = YoloLoss(
         anchors,
         image_size=args.image_size,
@@ -493,7 +528,34 @@ def main() -> None:
         positive_anchor_topk=args.positive_anchor_topk,
         ignore_anchor_iou=args.ignore_anchor_iou,
     ).to(device)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    decay_backbone = []
+    decay_detector = []
+    no_decay_backbone = []
+    no_decay_detector = []
+    for module_name, module in model.named_modules():
+        for param_name, parameter in module.named_parameters(recurse=False):
+            if not parameter.requires_grad:
+                continue
+            full_name = f"{module_name}.{param_name}" if module_name else param_name
+            is_backbone = full_name.startswith(("resnet", "stem", "down3", "down4", "down5", "elan3", "elan4", "elan5"))
+            is_no_decay = param_name.endswith("bias") or isinstance(module, (torch.nn.BatchNorm2d, torch.nn.LayerNorm))
+            if is_backbone and is_no_decay:
+                no_decay_backbone.append(parameter)
+            elif is_backbone:
+                decay_backbone.append(parameter)
+            elif is_no_decay:
+                no_decay_detector.append(parameter)
+            else:
+                decay_detector.append(parameter)
+
+    optimizer = torch.optim.AdamW(
+        [
+            {"params": decay_backbone, "lr": args.lr * args.backbone_lr_mult, "weight_decay": args.weight_decay},
+            {"params": no_decay_backbone, "lr": args.lr * args.backbone_lr_mult, "weight_decay": 0.0},
+            {"params": decay_detector, "lr": args.lr, "weight_decay": args.weight_decay},
+            {"params": no_decay_detector, "lr": args.lr, "weight_decay": 0.0},
+        ],
+    )
     def lr_lambda(epoch: int) -> float:
         if args.warmup_epochs > 0 and epoch < args.warmup_epochs:
             return float(epoch + 1) / float(args.warmup_epochs)
@@ -540,6 +602,7 @@ def main() -> None:
             total_epochs=args.epochs,
             ema=ema,
             freeze_backbone=freeze_backbone,
+            channels_last=channels_last,
         )
         eval_model = ema.module if ema is not None else model
         criterion.image_size = args.image_size
@@ -554,6 +617,7 @@ def main() -> None:
                     use_amp=args.amp,
                     epoch=epoch,
                     total_epochs=args.epochs,
+                    channels_last=channels_last,
                 )
         scheduler.step()
 
@@ -598,6 +662,7 @@ def main() -> None:
             "classes": classes,
             "anchors": anchors,
             "image_size": args.image_size,
+            "preserve_aspect": preserve_aspect,
             "model_config": model_config,
             "loss_weights": {
                 "box_weight": args.box_weight,
@@ -611,6 +676,8 @@ def main() -> None:
                 "positive_anchor_topk": args.positive_anchor_topk,
                 "ignore_anchor_iou": args.ignore_anchor_iou,
             },
+            "lr": args.lr,
+            "backbone_lr_mult": args.backbone_lr_mult,
             "amp": args.amp,
             "label_smoothing": args.label_smoothing,
             "ema_enabled": ema is not None,

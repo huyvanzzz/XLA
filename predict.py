@@ -59,14 +59,18 @@ def main() -> None:
     classes = checkpoint.get("classes") or load_classes(args.classes)
     anchors = checkpoint.get("anchors") or get_anchors(config)
     image_size = int(checkpoint.get("image_size", config["image_size"]))
+    preserve_aspect = bool(checkpoint.get("preserve_aspect", config.get("preserve_aspect", True)))
     model_config = dict(checkpoint.get("model_config", config["model"]))
     model_config["pretrained"] = False
+    channels_last = bool(config.get("channels_last", True)) and torch.cuda.is_available()
     if cli_conf_threshold is None:
         args.conf_threshold = checkpoint.get("best_conf_threshold", args.conf_threshold)
     if cli_nms_threshold is None:
         args.nms_threshold = checkpoint.get("best_nms_threshold", args.nms_threshold)
 
     model = TinyDetector(num_classes=len(classes), num_anchors=[len(scale) for scale in anchors], **model_config).to(device)
+    if channels_last:
+        model = model.to(memory_format=torch.channels_last)
     model.load_state_dict(checkpoint["model"])
     model.eval()
 
@@ -80,11 +84,15 @@ def main() -> None:
             batch_images = []
             image_sizes = []
             for image_path in batch_paths:
-                image_t, orig_w, orig_h = load_image_for_inference(image_path, image_size)
+                image_t, orig_w, orig_h = load_image_for_inference(image_path, image_size, preserve_aspect=preserve_aspect)
                 batch_images.append(image_t)
                 image_sizes.append((orig_w, orig_h))
 
-            pred = model(torch.stack(batch_images, dim=0).to(device))
+            batch_tensor = torch.stack(batch_images, dim=0).to(
+                device,
+                memory_format=torch.channels_last if channels_last else torch.contiguous_format,
+            )
+            pred = model(batch_tensor)
             for idx, (image_path, (orig_w, orig_h)) in enumerate(zip(batch_paths, image_sizes)):
                 boxes = decode_predictions(
                     {"main": [scale[idx : idx + 1] for scale in pred["main"]]},
@@ -99,6 +107,7 @@ def main() -> None:
                     max_detections=args.max_detections,
                     pre_nms_topk=args.pre_nms_topk,
                     class_pre_nms_topk=args.class_pre_nms_topk,
+                    preserve_aspect=preserve_aspect,
                 )
                 predictions.append({"image_id": image_path.name, "boxes": boxes})
             progress.update(len(batch_paths))

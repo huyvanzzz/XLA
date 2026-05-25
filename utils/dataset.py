@@ -25,6 +25,7 @@ class DetectionDataset(Dataset):
         image_size: int = 416,
         augment: bool = False,
         augment_config: dict[str, float] | None = None,
+        preserve_aspect: bool = True,
     ) -> None:
         self.annotation_path = Path(annotation_path)
         self.image_dir = Path(image_dir)
@@ -33,6 +34,7 @@ class DetectionDataset(Dataset):
         self.image_size = image_size
         self.augment = augment
         self.augment_config = augment_config or {}
+        self.preserve_aspect = preserve_aspect
 
         with self.annotation_path.open("r", encoding="utf-8") as f:
             data = json.load(f)
@@ -77,16 +79,18 @@ class DetectionDataset(Dataset):
         if self.augment:
             image, boxes_t, labels_t = self._augment(image, boxes_t, labels_t)
 
-        aug_w, aug_h = image.size
-        scale_x = self.image_size / aug_w
-        scale_y = self.image_size / aug_h
-        if boxes_t.numel() > 0:
-            boxes_t[:, [0, 2]] *= scale_x
-            boxes_t[:, [1, 3]] *= scale_y
-            boxes_t[:, 0::2].clamp_(0, self.image_size)
-            boxes_t[:, 1::2].clamp_(0, self.image_size)
-
-        image = image.resize((self.image_size, self.image_size), Image.BILINEAR)
+        if self.preserve_aspect:
+            image, boxes_t = self._letterbox(image, boxes_t)
+        else:
+            aug_w, aug_h = image.size
+            scale_x = self.image_size / aug_w
+            scale_y = self.image_size / aug_h
+            if boxes_t.numel() > 0:
+                boxes_t[:, [0, 2]] *= scale_x
+                boxes_t[:, [1, 3]] *= scale_y
+                boxes_t[:, 0::2].clamp_(0, self.image_size)
+                boxes_t[:, 1::2].clamp_(0, self.image_size)
+            image = image.resize((self.image_size, self.image_size), Image.BILINEAR)
         image_t = self._to_tensor(image)
 
         target = {
@@ -174,6 +178,24 @@ class DetectionDataset(Dataset):
 
         image = image.crop((left, top, right, bottom))
         return image, cropped[keep], labels[keep]
+
+    def _letterbox(self, image: Image.Image, boxes: torch.Tensor) -> tuple[Image.Image, torch.Tensor]:
+        width, height = image.size
+        scale = min(self.image_size / width, self.image_size / height)
+        new_w = max(1, int(round(width * scale)))
+        new_h = max(1, int(round(height * scale)))
+        pad_x = (self.image_size - new_w) // 2
+        pad_y = (self.image_size - new_h) // 2
+
+        resized = image.resize((new_w, new_h), Image.BILINEAR)
+        canvas = Image.new("RGB", (self.image_size, self.image_size), (114, 114, 114))
+        canvas.paste(resized, (pad_x, pad_y))
+        if boxes.numel() > 0:
+            boxes[:, [0, 2]] = boxes[:, [0, 2]] * scale + pad_x
+            boxes[:, [1, 3]] = boxes[:, [1, 3]] * scale + pad_y
+            boxes[:, 0::2].clamp_(0, self.image_size)
+            boxes[:, 1::2].clamp_(0, self.image_size)
+        return canvas, boxes
 
     @staticmethod
     def _to_tensor(image: Image.Image) -> torch.Tensor:

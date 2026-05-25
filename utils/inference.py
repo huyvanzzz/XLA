@@ -16,10 +16,21 @@ DEFAULT_ANCHORS = [
 ]
 
 
-def load_image_for_inference(path: str | Path, image_size: int) -> tuple[torch.Tensor, int, int]:
+def load_image_for_inference(path: str | Path, image_size: int, preserve_aspect: bool = True) -> tuple[torch.Tensor, int, int]:
     image = Image.open(path).convert("RGB")
     width, height = image.size
-    image = image.resize((image_size, image_size), Image.BILINEAR)
+    if preserve_aspect:
+        scale = min(image_size / width, image_size / height)
+        new_w = max(1, int(round(width * scale)))
+        new_h = max(1, int(round(height * scale)))
+        pad_x = (image_size - new_w) // 2
+        pad_y = (image_size - new_h) // 2
+        resized = image.resize((new_w, new_h), Image.BILINEAR)
+        canvas = Image.new("RGB", (image_size, image_size), (114, 114, 114))
+        canvas.paste(resized, (pad_x, pad_y))
+        image = canvas
+    else:
+        image = image.resize((image_size, image_size), Image.BILINEAR)
     tensor = DetectionDataset._to_tensor(image)
     return tensor, width, height
 
@@ -38,6 +49,7 @@ def decode_predictions(
     max_detections: int = 100,
     pre_nms_topk: int = 1000,
     class_pre_nms_topk: int = 100,
+    preserve_aspect: bool = True,
 ) -> list[dict[str, object]]:
     if isinstance(pred, dict):
         preds = pred["main"]
@@ -55,7 +67,15 @@ def decode_predictions(
     for scale_pred, scale_anchors in zip(preds, anchors):
         if scale_pred.dim() == 5:
             scale_pred = scale_pred[0]
-        boxes, scores, labels = _decode_scale(scale_pred, classes, scale_anchors, image_size, orig_width, orig_height)
+        boxes, scores, labels = _decode_scale(
+            scale_pred,
+            classes,
+            scale_anchors,
+            image_size,
+            orig_width,
+            orig_height,
+            preserve_aspect=preserve_aspect,
+        )
         all_boxes.append(boxes)
         all_scores.append(scores)
         all_labels.append(labels)
@@ -114,6 +134,7 @@ def _decode_scale(
     image_size: int,
     orig_width: int,
     orig_height: int,
+    preserve_aspect: bool = True,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     device = pred.device
     grid_h, grid_w, num_anchors, _ = pred.shape
@@ -148,7 +169,16 @@ def _decode_scale(
     class_scores, labels = pred[..., 5:].softmax(dim=-1).reshape(-1, len(classes)).max(dim=1)
     scores = object_scores * class_scores
 
-    boxes[:, [0, 2]] *= orig_width / image_size
-    boxes[:, [1, 3]] *= orig_height / image_size
+    if preserve_aspect:
+        scale = min(image_size / orig_width, image_size / orig_height)
+        new_w = round(orig_width * scale)
+        new_h = round(orig_height * scale)
+        pad_x = (image_size - new_w) / 2.0
+        pad_y = (image_size - new_h) / 2.0
+        boxes[:, [0, 2]] = (boxes[:, [0, 2]] - pad_x) / scale
+        boxes[:, [1, 3]] = (boxes[:, [1, 3]] - pad_y) / scale
+    else:
+        boxes[:, [0, 2]] *= orig_width / image_size
+        boxes[:, [1, 3]] *= orig_height / image_size
     boxes = clip_boxes(boxes, orig_width, orig_height)
     return boxes, scores, labels
