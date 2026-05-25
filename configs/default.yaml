@@ -2,7 +2,7 @@ image_size: 416
 multi_scale:
   enabled: true
   sizes: [352, 384, 416, 448, 480]
-epochs: 80
+epochs: 1
 batch_size: 24
 lr: 0.001
 weight_decay: 0.0001
