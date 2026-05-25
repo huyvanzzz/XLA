@@ -706,7 +706,13 @@ def main() -> None:
 
         metric_logs = None
         metric_every = max(1, int(config["validation_metric"].get("every", 1)))
-        should_eval_map = bool(config["validation_metric"]["enabled"]) and (epoch % metric_every == 0 or epoch == args.epochs)
+        metric_start_epoch = max(1, int(config["validation_metric"].get("start_epoch", 1)))
+        metric_started = epoch >= metric_start_epoch
+        should_eval_map = (
+            bool(config["validation_metric"]["enabled"])
+            and metric_started
+            and (epoch % metric_every == 0 or epoch == args.epochs)
+        )
         if should_eval_map:
             metric_logs = evaluate_map_with_optional_tuning(
                 eval_model,
@@ -766,10 +772,10 @@ def main() -> None:
         }
         if ema is not None:
             state["model"] = ema.module.state_dict()
-        torch.save(state, checkpoint_dir / "last.pth")
 
         if use_map_for_best and metric_logs is None:
             continue
+        torch.save(state, checkpoint_dir / "last.pth")
 
         current_score = metric_logs["map50"] if use_map_for_best else val_logs["loss"]
         improved = current_score > best_score if use_map_for_best else current_score < best_score

@@ -81,6 +81,7 @@ DEFAULT_CONFIG = {
     },
     "validation_metric": {
         "enabled": True,
+        "start_epoch": 30,
         "every": 1,
         "conf_threshold": 0.1,
         "class_conf_thresholds": {},
