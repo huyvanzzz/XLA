@@ -2,6 +2,8 @@
 
 Chỉ ghi các version được đem đi train/evaluate thật sự. Các chỉ số để trống để điền sau khi chạy.
 
+Mục tiêu: kết quả mAP@0.5 trên validation là 0.8.
+
 ## v1_initial_train
 
 Ngày:
@@ -14,14 +16,13 @@ Mô tả:
 - Top-k anchor assignment, hard NMS, chọn `best.pth` theo `mAP@0.5`.
 
 Kết quả:
-- mAP@0.5:
-- Precision:
-- Recall:
-- Thời gian train/epoch:
-- Thời gian mAP validation:
-- Tổng epoch train:
-- Epoch tốt nhất:
-- Ghi chú:
+- mAP@0.5: 0.6
+- Precision: 0.0616
+- Recall: 0.87
+- Thời gian train/epoch: 5'30s
+- Thời gian mAP validation: 50s
+- Tổng epoch train: 45. (Tính tại epoch tốt nhất)
+- Ghi chú: Thời gian train chậm, kết quả cũng không quá cao.
 
 ## v2_current_letterbox_fast_finetune
 
