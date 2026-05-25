@@ -28,6 +28,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--nms_threshold", type=float)
     parser.add_argument("--nms_type", choices=["hard", "soft"])
     parser.add_argument("--max_detections", type=int)
+    parser.add_argument("--pre_nms_topk", type=int)
     parser.add_argument("--batch_size", type=int, default=16)
     return parser.parse_args()
 
@@ -35,7 +36,7 @@ def parse_args() -> argparse.Namespace:
 def apply_config(args: argparse.Namespace) -> argparse.Namespace:
     config = load_config(args.config)
     inference = config["inference"]
-    for name in ["conf_threshold", "nms_threshold", "nms_type", "max_detections"]:
+    for name in ["conf_threshold", "nms_threshold", "nms_type", "max_detections", "pre_nms_topk"]:
         if getattr(args, name) is None:
             setattr(args, name, inference[name])
     return args
@@ -95,6 +96,7 @@ def main() -> None:
                     nms_threshold=args.nms_threshold,
                     nms_type=args.nms_type,
                     max_detections=args.max_detections,
+                    pre_nms_topk=args.pre_nms_topk,
                 )
                 predictions.append({"image_id": image_path.name, "boxes": boxes})
             progress.update(len(batch_paths))

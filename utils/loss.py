@@ -25,6 +25,7 @@ class YoloLoss(nn.Module):
         iou_aware_objectness: bool = True,
         class_weights: list[float] | None = None,
         label_smoothing: float = 0.03,
+        positive_anchor_topk: int = 3,
     ) -> None:
         super().__init__()
         self.anchors = [[(float(w), float(h)) for w, h in scale] for scale in anchors]
@@ -39,6 +40,7 @@ class YoloLoss(nn.Module):
         self.objectness_focal_gamma = objectness_focal_gamma
         self.iou_aware_objectness = iou_aware_objectness
         self.label_smoothing = label_smoothing
+        self.positive_anchor_topk = max(1, int(positive_anchor_topk))
         if class_weights is not None:
             self.register_buffer("class_weights", torch.tensor(class_weights, dtype=torch.float32))
         else:
@@ -101,28 +103,31 @@ class YoloLoss(nn.Module):
                 continue
             wh = (boxes[:, 2:] - boxes[:, :2]).clamp(min=1.0)
             centers = (boxes[:, :2] + boxes[:, 2:]) * 0.5
-            best_flat_anchor = wh_iou(flat_anchors, wh).argmax(dim=0)
+            anchor_scores = wh_iou(flat_anchors, wh)
+            topk = min(self.positive_anchor_topk, flat_anchors.shape[0])
+            best_flat_anchors = anchor_scores.topk(topk, dim=0).indices
             for obj_idx in range(boxes.shape[0]):
-                flat_anchor_idx = int(best_flat_anchor[obj_idx].item())
-                scale_idx = max(i for i, start in enumerate(scale_offsets) if flat_anchor_idx >= start)
-                anchor_idx = flat_anchor_idx - scale_offsets[scale_idx]
-                pred = preds[scale_idx]
-                _, grid_h, grid_w, _, _ = pred.shape
-                stride_x = self.image_size / grid_w
-                stride_y = self.image_size / grid_h
-                cell_x = (centers[obj_idx, 0] / stride_x).clamp(0, grid_w - 1e-4)
-                cell_y = (centers[obj_idx, 1] / stride_y).clamp(0, grid_h - 1e-4)
-                gx = cell_x.floor().long()
-                gy = cell_y.floor().long()
-                anchor = anchors_by_scale[scale_idx][anchor_idx]
+                for flat_anchor_idx_t in best_flat_anchors[:, obj_idx]:
+                    flat_anchor_idx = int(flat_anchor_idx_t.item())
+                    scale_idx = max(i for i, start in enumerate(scale_offsets) if flat_anchor_idx >= start)
+                    anchor_idx = flat_anchor_idx - scale_offsets[scale_idx]
+                    pred = preds[scale_idx]
+                    _, grid_h, grid_w, _, _ = pred.shape
+                    stride_x = self.image_size / grid_w
+                    stride_y = self.image_size / grid_h
+                    cell_x = (centers[obj_idx, 0] / stride_x).clamp(0, grid_w - 1e-4)
+                    cell_y = (centers[obj_idx, 1] / stride_y).clamp(0, grid_h - 1e-4)
+                    gx = cell_x.floor().long()
+                    gy = cell_y.floor().long()
+                    anchor = anchors_by_scale[scale_idx][anchor_idx]
 
-                obj_targets[scale_idx][batch_idx, gy, gx, anchor_idx] = 1.0
-                box_targets[scale_idx][batch_idx, gy, gx, anchor_idx, 0] = cell_x - gx.float()
-                box_targets[scale_idx][batch_idx, gy, gx, anchor_idx, 1] = cell_y - gy.float()
-                box_targets[scale_idx][batch_idx, gy, gx, anchor_idx, 2] = torch.log(wh[obj_idx, 0] / anchor[0].clamp(min=1e-6))
-                box_targets[scale_idx][batch_idx, gy, gx, anchor_idx, 3] = torch.log(wh[obj_idx, 1] / anchor[1].clamp(min=1e-6))
-                xyxy_targets[scale_idx][batch_idx, gy, gx, anchor_idx] = boxes[obj_idx]
-                cls_targets[scale_idx][batch_idx, gy, gx, anchor_idx] = labels[obj_idx]
+                    obj_targets[scale_idx][batch_idx, gy, gx, anchor_idx] = 1.0
+                    box_targets[scale_idx][batch_idx, gy, gx, anchor_idx, 0] = cell_x - gx.float()
+                    box_targets[scale_idx][batch_idx, gy, gx, anchor_idx, 1] = cell_y - gy.float()
+                    box_targets[scale_idx][batch_idx, gy, gx, anchor_idx, 2] = torch.log(wh[obj_idx, 0] / anchor[0].clamp(min=1e-6))
+                    box_targets[scale_idx][batch_idx, gy, gx, anchor_idx, 3] = torch.log(wh[obj_idx, 1] / anchor[1].clamp(min=1e-6))
+                    xyxy_targets[scale_idx][batch_idx, gy, gx, anchor_idx] = boxes[obj_idx]
+                    cls_targets[scale_idx][batch_idx, gy, gx, anchor_idx] = labels[obj_idx]
 
         box_loss = preds[0].sum() * 0.0
         iou_loss = preds[0].sum() * 0.0

@@ -45,6 +45,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--iou_weight", type=float)
     parser.add_argument("--aux_weight", type=float)
     parser.add_argument("--objectness_focal_gamma", type=float)
+    parser.add_argument("--positive_anchor_topk", type=int)
     parser.add_argument("--iou_aware_objectness", action="store_true")
     parser.add_argument("--no_iou_aware_objectness", action="store_true")
     parser.add_argument("--num_workers", type=int)
@@ -76,6 +77,7 @@ def apply_config(args: argparse.Namespace) -> tuple[argparse.Namespace, list[lis
         "iou_weight",
         "aux_weight",
         "objectness_focal_gamma",
+        "positive_anchor_topk",
         "iou_aware_objectness",
     ]:
         if getattr(args, name) is None:
@@ -355,6 +357,7 @@ def evaluate_map(
     conf_threshold: float,
     nms_threshold: float,
     nms_type: str,
+    pre_nms_topk: int,
 ) -> dict[str, float]:
     model.eval()
     predictions = []
@@ -373,6 +376,7 @@ def evaluate_map(
                 conf_threshold=conf_threshold,
                 nms_threshold=nms_threshold,
                 nms_type=nms_type,
+                pre_nms_topk=pre_nms_topk,
             )
             predictions.append({"image_id": str(target["image_id"]), "boxes": boxes})
 
@@ -410,6 +414,7 @@ def evaluate_map_with_optional_tuning(
                 conf_threshold=float(conf_threshold),
                 nms_threshold=float(nms_threshold),
                 nms_type=str(metric_config.get("nms_type", "soft")),
+                pre_nms_topk=int(metric_config.get("pre_nms_topk", 1000)),
             )
             if best is None or result["map50"] > best["map50"]:
                 best = result
@@ -480,6 +485,7 @@ def main() -> None:
         iou_aware_objectness=args.iou_aware_objectness,
         class_weights=class_weights,
         label_smoothing=args.label_smoothing,
+        positive_anchor_topk=args.positive_anchor_topk,
     ).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     def lr_lambda(epoch: int) -> float:
@@ -552,7 +558,9 @@ def main() -> None:
         )
 
         metric_logs = None
-        if config["validation_metric"]["enabled"]:
+        metric_every = max(1, int(config["validation_metric"].get("every", 1)))
+        should_eval_map = bool(config["validation_metric"]["enabled"]) and (epoch % metric_every == 0 or epoch == args.epochs)
+        if should_eval_map:
             metric_logs = evaluate_map_with_optional_tuning(
                 eval_model,
                 val_loader,
@@ -588,6 +596,7 @@ def main() -> None:
                 "aux_weight": args.aux_weight,
                 "objectness_focal_gamma": args.objectness_focal_gamma,
                 "iou_aware_objectness": args.iou_aware_objectness,
+                "positive_anchor_topk": args.positive_anchor_topk,
             },
             "amp": args.amp,
             "label_smoothing": args.label_smoothing,
@@ -599,12 +608,16 @@ def main() -> None:
             "best_conf_threshold": metric_logs["conf_threshold"] if metric_logs is not None else config["inference"]["conf_threshold"],
             "best_nms_threshold": metric_logs["nms_threshold"] if metric_logs is not None else config["inference"]["nms_threshold"],
             "nms_type": config["validation_metric"].get("nms_type", config["inference"].get("nms_type", "soft")),
+            "pre_nms_topk": config["validation_metric"].get("pre_nms_topk", config["inference"].get("pre_nms_topk", 1000)),
         }
         if ema is not None:
             state["model"] = ema.module.state_dict()
         torch.save(state, checkpoint_dir / "last.pth")
 
-        current_score = metric_logs["map50"] if use_map_for_best and metric_logs is not None else val_logs["loss"]
+        if use_map_for_best and metric_logs is None:
+            continue
+
+        current_score = metric_logs["map50"] if use_map_for_best else val_logs["loss"]
         improved = current_score > best_score if use_map_for_best else current_score < best_score
         if improved:
             best_score = current_score

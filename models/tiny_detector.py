@@ -71,6 +71,109 @@ class SPPBlock(nn.Module):
         return self.fuse(torch.cat([x, self.pool5(x), self.pool9(x), self.pool13(x)], dim=1))
 
 
+class LargeKernelBlock(nn.Module):
+    """Depthwise large-kernel context block for deeper detector features."""
+
+    def __init__(self, channels: int, kernel_size: int = 7) -> None:
+        super().__init__()
+        padding = kernel_size // 2
+        self.block = nn.Sequential(
+            nn.Conv2d(channels, channels, kernel_size, padding=padding, groups=channels, bias=False),
+            nn.BatchNorm2d(channels),
+            nn.SiLU(inplace=True),
+            nn.Conv2d(channels, channels, kernel_size=1, bias=False),
+            nn.BatchNorm2d(channels),
+        )
+        self.act = nn.SiLU(inplace=True)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.act(x + self.block(x))
+
+
+class PartialSelfAttention(nn.Module):
+    """Apply self-attention to a channel subset, following the PSA idea used in recent YOLOs."""
+
+    def __init__(self, channels: int, heads: int = 4, ratio: float = 0.5) -> None:
+        super().__init__()
+        attn_channels = max(heads, int(channels * ratio))
+        attn_channels = max(heads, (attn_channels // heads) * heads)
+        attn_channels = min(attn_channels, channels)
+        self.attn_channels = attn_channels
+        self.norm = nn.LayerNorm(attn_channels)
+        self.attn = nn.MultiheadAttention(attn_channels, heads, batch_first=True)
+        self.ffn = nn.Sequential(
+            nn.LayerNorm(attn_channels),
+            nn.Linear(attn_channels, attn_channels * 2),
+            nn.SiLU(inplace=True),
+            nn.Linear(attn_channels * 2, attn_channels),
+        )
+        self.fuse = ConvBNAct(channels, channels, kernel_size=1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if self.attn_channels <= 0:
+            return x
+        xa, xb = x[:, : self.attn_channels], x[:, self.attn_channels :]
+        b, c, h, w = xa.shape
+        tokens = xa.flatten(2).transpose(1, 2)
+        attn_in = self.norm(tokens)
+        attn_out, _ = self.attn(attn_in, attn_in, attn_in, need_weights=False)
+        tokens = tokens + attn_out
+        tokens = tokens + self.ffn(tokens)
+        xa = tokens.transpose(1, 2).reshape(b, c, h, w)
+        return self.fuse(torch.cat([xa, xb], dim=1))
+
+
+class FPNPANNeck(nn.Module):
+    """Top-down FPN plus bottom-up PAN feature fusion for small-object recall."""
+
+    def __init__(self, in_channels: list[int], out_channels: int = 256, attention_heads: int = 4) -> None:
+        super().__init__()
+        self.lateral3 = ConvBNAct(in_channels[0], out_channels, kernel_size=1)
+        self.lateral4 = ConvBNAct(in_channels[1], out_channels, kernel_size=1)
+        self.lateral5 = ConvBNAct(in_channels[2], out_channels, kernel_size=1)
+        self.deep_context = nn.Sequential(
+            SPPBlock(out_channels),
+            LargeKernelBlock(out_channels, kernel_size=7),
+            PartialSelfAttention(out_channels, heads=attention_heads, ratio=0.5),
+        )
+        self.fuse4 = nn.Sequential(
+            ConvBNAct(out_channels * 2, out_channels, kernel_size=1),
+            ELANBlock(out_channels, out_channels, depth=2),
+        )
+        self.fuse3 = nn.Sequential(
+            ConvBNAct(out_channels * 2, out_channels, kernel_size=1),
+            ELANBlock(out_channels, out_channels, depth=2),
+        )
+        self.down3 = ConvBNAct(out_channels, out_channels, stride=2)
+        self.pan4 = nn.Sequential(
+            ConvBNAct(out_channels * 2, out_channels, kernel_size=1),
+            ELANBlock(out_channels, out_channels, depth=2),
+        )
+        self.down4 = ConvBNAct(out_channels, out_channels, stride=2)
+        self.pan5 = nn.Sequential(
+            ConvBNAct(out_channels * 2, out_channels, kernel_size=1),
+            ELANBlock(out_channels, out_channels, depth=2),
+            LargeKernelBlock(out_channels, kernel_size=7),
+        )
+
+    def forward(self, features: tuple[torch.Tensor, torch.Tensor, torch.Tensor]) -> list[torch.Tensor]:
+        p3, p4, p5 = features
+        p3 = self.lateral3(p3)
+        p4 = self.lateral4(p4)
+        p5 = self.deep_context(self.lateral5(p5))
+
+        p5_up = torch.nn.functional.interpolate(p5, size=p4.shape[-2:], mode="nearest")
+        p4_td = self.fuse4(torch.cat([p4, p5_up], dim=1))
+        p4_up = torch.nn.functional.interpolate(p4_td, size=p3.shape[-2:], mode="nearest")
+        p3_out = self.fuse3(torch.cat([p3, p4_up], dim=1))
+
+        p3_down = self.down3(p3_out)
+        p4_out = self.pan4(torch.cat([p4_td, p3_down], dim=1))
+        p4_down = self.down4(p4_out)
+        p5_out = self.pan5(torch.cat([p5, p4_down], dim=1))
+        return [p3_out, p4_out, p5_out]
+
+
 class Bottleneck(nn.Module):
     expansion = 4
 
@@ -164,6 +267,8 @@ class TinyDetector(nn.Module):
         num_anchors: int | list[int] = 3,
         base_channels: int = 40,
         head_channels: int = 256,
+        neck_channels: int = 256,
+        attention_heads: int = 4,
         dropout: float = 0.05,
         elan_depth: int = 2,
         aux_head: bool = True,
@@ -181,7 +286,6 @@ class TinyDetector(nn.Module):
 
         if backbone == "resnet50":
             self.resnet = ResNet50Backbone(pretrained=pretrained)
-            self.spp = SPPBlock(2048)
             feature_channels = [512, 1024, 2048]
         elif backbone == "eelan":
             c1 = base_channels
@@ -204,6 +308,8 @@ class TinyDetector(nn.Module):
         else:
             raise ValueError(f"Unsupported backbone: {backbone}")
         self.backbone_name = backbone
+        self.neck = FPNPANNeck(feature_channels, out_channels=neck_channels, attention_heads=attention_heads)
+        feature_channels = [neck_channels, neck_channels, neck_channels]
 
         self.main_heads = nn.ModuleList(
             [
@@ -224,13 +330,12 @@ class TinyDetector(nn.Module):
     def forward(self, x: torch.Tensor) -> dict[str, list[torch.Tensor]]:
         if self.backbone_name == "resnet50":
             p3, p4, p5 = self.resnet(x)
-            p5 = self.spp(p5)
         else:
             x = self.stem(x)
             p3 = self.elan3(self.down3(x))
             p4 = self.elan4(self.down4(p3))
             p5 = self.elan5(self.down5(p4))
-        features = [p3, p4, p5]
+        features = self.neck((p3, p4, p5))
         main = [head(feature) for head, feature in zip(self.main_heads, features)]
         if self.training and self.aux_head_enabled:
             aux = [head(feature) for head, feature in zip(self.aux_heads, features)]
