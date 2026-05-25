@@ -59,14 +59,14 @@ DEFAULT_CONFIG = {
     "inference": {
         "conf_threshold": 0.05,
         "nms_threshold": 0.5,
-        "nms_type": "soft",
+        "nms_type": "hard",
         "max_detections": 100,
     },
     "validation_metric": {
-        "enabled": False,
+        "enabled": True,
         "conf_threshold": 0.05,
         "nms_threshold": 0.5,
-        "nms_type": "soft",
+        "nms_type": "hard",
         "tune": False,
         "tune_every": 10,
         "conf_thresholds": [0.03, 0.05],

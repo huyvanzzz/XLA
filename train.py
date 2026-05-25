@@ -494,7 +494,8 @@ def main() -> None:
     freeze_backbone_epochs = int(config["freeze_backbone_epochs"])
     early_stopping_patience = int(config["early_stopping_patience"])
 
-    best_val = float("inf")
+    use_map_for_best = bool(config["validation_metric"]["enabled"])
+    best_score = float("-inf") if use_map_for_best else float("inf")
     epochs_without_improvement = 0
     for epoch in range(1, args.epochs + 1):
         if config["multi_scale"]["enabled"]:
@@ -602,15 +603,20 @@ def main() -> None:
         if ema is not None:
             state["model"] = ema.module.state_dict()
         torch.save(state, checkpoint_dir / "last.pth")
-        if val_logs["loss"] < best_val:
-            best_val = val_logs["loss"]
+
+        current_score = metric_logs["map50"] if use_map_for_best and metric_logs is not None else val_logs["loss"]
+        improved = current_score > best_score if use_map_for_best else current_score < best_score
+        if improved:
+            best_score = current_score
             epochs_without_improvement = 0
             torch.save(state, checkpoint_dir / "best.pth")
-            print(f"saved best checkpoint: {checkpoint_dir / 'best.pth'}")
+            metric_name = "mAP@0.5" if use_map_for_best else "val_loss"
+            print(f"saved best checkpoint: {checkpoint_dir / 'best.pth'} ({metric_name}={current_score:.4f})")
         else:
             epochs_without_improvement += 1
             if early_stopping_patience > 0 and epochs_without_improvement >= early_stopping_patience:
-                print(f"early stopping after {early_stopping_patience} epoch(s) without validation improvement")
+                metric_name = "mAP@0.5" if use_map_for_best else "val_loss"
+                print(f"early stopping after {early_stopping_patience} epoch(s) without {metric_name} improvement")
                 break
 
 

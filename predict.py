@@ -45,7 +45,6 @@ def main() -> None:
     args = parse_args()
     cli_conf_threshold = args.conf_threshold
     cli_nms_threshold = args.nms_threshold
-    cli_nms_type = args.nms_type
     args = apply_config(args)
     image_dir = Path(args.image_dir)
     checkpoint_path = Path(args.checkpoint)
@@ -64,8 +63,6 @@ def main() -> None:
         args.conf_threshold = checkpoint.get("best_conf_threshold", args.conf_threshold)
     if cli_nms_threshold is None:
         args.nms_threshold = checkpoint.get("best_nms_threshold", args.nms_threshold)
-    if cli_nms_type is None:
-        args.nms_type = checkpoint.get("nms_type", args.nms_type)
 
     model = TinyDetector(num_classes=len(classes), num_anchors=[len(scale) for scale in anchors], **model_config).to(device)
     model.load_state_dict(checkpoint["model"])

@@ -34,8 +34,9 @@ def decode_predictions(
     orig_height: int,
     conf_threshold: float = 0.25,
     nms_threshold: float = 0.5,
-    nms_type: str = "soft",
+    nms_type: str = "hard",
     max_detections: int = 100,
+    pre_nms_topk: int = 1000,
 ) -> list[dict[str, object]]:
     if isinstance(pred, dict):
         preds = pred["main"]
@@ -69,6 +70,11 @@ def decode_predictions(
     labels = labels[keep]
     if boxes.numel() == 0:
         return []
+    if pre_nms_topk > 0 and scores.numel() > pre_nms_topk:
+        top_scores, top_idx = scores.topk(pre_nms_topk)
+        boxes = boxes[top_idx]
+        scores = top_scores
+        labels = labels[top_idx]
 
     results: list[dict[str, object]] = []
     for label_idx, class_name in enumerate(classes):
