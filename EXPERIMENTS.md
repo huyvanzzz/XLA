@@ -33,8 +33,6 @@ Mô tả:
 - Giữ ResNet50 pretrained backbone.
 - Dùng letterbox để giữ aspect ratio, bbox scale/pad tương ứng.
 - Auto anchors fit theo letterbox.
-- FPN/PAN neck giảm còn 192 channels.
-- Tắt partial self-attention mặc định để giảm thời gian train và overfit.
 - Dùng CIoU loss cho bbox decoded.
 - Objectness bias init với prior 0.01.
 - Optimizer AdamW chia param groups: backbone LR thấp hơn, không decay bias/BatchNorm/LayerNorm.
