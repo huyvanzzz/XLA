@@ -7,7 +7,7 @@ from typing import Any
 
 DEFAULT_CONFIG = {
     "image_size": 512,
-    "preserve_aspect": True,
+    "preserve_aspect": False,
     "multi_scale": {"enabled": False, "sizes": [416, 448, 480, 512, 544]},
     "epochs": 80,
     "batch_size": 16,
@@ -15,7 +15,7 @@ DEFAULT_CONFIG = {
     "lr": 1e-4,
     "backbone_lr_mult": 0.2,
     "weight_decay": 5e-4,
-    "num_workers": 0,
+    "num_workers": 4,
     "channels_last": True,
     "cudnn_benchmark": True,
     "seed": 42,
@@ -24,6 +24,7 @@ DEFAULT_CONFIG = {
     "label_smoothing": 0.05,
     "freeze_backbone_epochs": 2,
     "backbone_trainable": "layer4",
+    "backbone_freeze_bn": True,
     "early_stopping_patience": 20,
     "validation_loss": {"enabled": False},
     "augmentation": {
@@ -32,6 +33,9 @@ DEFAULT_CONFIG = {
         "random_scale_prob": 0.45,
         "min_scale": 0.75,
         "max_scale": 1.25,
+        "random_erasing_prob": 0.25,
+        "random_erasing_min_area": 0.02,
+        "random_erasing_max_area": 0.12,
     },
     "model": {
         "backbone": "resnet50",

@@ -91,6 +91,8 @@ class DetectionDataset(Dataset):
                 boxes_t[:, 0::2].clamp_(0, self.image_size)
                 boxes_t[:, 1::2].clamp_(0, self.image_size)
             image = image.resize((self.image_size, self.image_size), Image.BILINEAR)
+        if self.augment:
+            image = self._random_erasing(image)
         image_t = self._to_tensor(image)
 
         target = {
@@ -196,6 +198,26 @@ class DetectionDataset(Dataset):
             boxes[:, 0::2].clamp_(0, self.image_size)
             boxes[:, 1::2].clamp_(0, self.image_size)
         return canvas, boxes
+
+    def _random_erasing(self, image: Image.Image) -> Image.Image:
+        prob = float(self.augment_config.get("random_erasing_prob", 0.0))
+        if random.random() >= prob:
+            return image
+        width, height = image.size
+        area = width * height
+        min_area = float(self.augment_config.get("random_erasing_min_area", 0.02))
+        max_area = float(self.augment_config.get("random_erasing_max_area", 0.12))
+        erase_area = random.uniform(min_area, max_area) * area
+        aspect = random.uniform(0.3, 3.3)
+        erase_w = int(round((erase_area * aspect) ** 0.5))
+        erase_h = int(round((erase_area / aspect) ** 0.5))
+        if erase_w <= 0 or erase_h <= 0 or erase_w >= width or erase_h >= height:
+            return image
+        left = random.randint(0, width - erase_w)
+        top = random.randint(0, height - erase_h)
+        image = image.copy()
+        image.paste((114, 114, 114), (left, top, left + erase_w, top + erase_h))
+        return image
 
     @staticmethod
     def _to_tensor(image: Image.Image) -> torch.Tensor:

@@ -352,6 +352,12 @@ def set_frozen_feature_extractor_eval(model: TinyDetector) -> None:
             module.eval()
 
 
+def set_backbone_batchnorm_eval(model: TinyDetector) -> None:
+    for name, module in model.named_modules():
+        if _is_backbone_parameter(name) and isinstance(module, torch.nn.BatchNorm2d):
+            module.eval()
+
+
 def run_epoch(
     model: TinyDetector,
     loader: DataLoader,
@@ -364,12 +370,15 @@ def run_epoch(
     total_epochs: int = 0,
     ema: ModelEMA | None = None,
     freeze_backbone: bool = False,
+    freeze_backbone_bn: bool = False,
     channels_last: bool = False,
 ) -> dict[str, float]:
     training = optimizer is not None
     model.train(training)
     if training and freeze_backbone:
         set_frozen_feature_extractor_eval(model)
+    if training and freeze_backbone_bn:
+        set_backbone_batchnorm_eval(model)
     totals: dict[str, float] = {}
     steps = 0
     phase = "train" if training else "val"
@@ -637,6 +646,7 @@ def main() -> None:
     ema = ModelEMA(model, decay=float(config["ema"]["decay"])) if config["ema"]["enabled"] else None
     freeze_backbone_epochs = int(config["freeze_backbone_epochs"])
     backbone_trainable = str(config.get("backbone_trainable", "layer4"))
+    freeze_backbone_bn = bool(config.get("backbone_freeze_bn", True))
     early_stopping_patience = int(config["early_stopping_patience"])
 
     use_map_for_best = bool(config["validation_metric"]["enabled"])
@@ -673,6 +683,7 @@ def main() -> None:
             total_epochs=args.epochs,
             ema=ema,
             freeze_backbone=freeze_backbone,
+            freeze_backbone_bn=freeze_backbone_bn,
             channels_last=channels_last,
         )
         eval_model = ema.module if ema is not None else model
@@ -761,6 +772,7 @@ def main() -> None:
             "ema_enabled": ema is not None,
             "freeze_backbone_epochs": freeze_backbone_epochs,
             "backbone_trainable": backbone_trainable,
+            "backbone_freeze_bn": freeze_backbone_bn,
             "epoch": epoch,
             "val_loss": val_logs["loss"] if val_logs is not None else None,
             "val_map50": metric_logs["map50"] if metric_logs is not None else None,
