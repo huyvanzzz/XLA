@@ -68,6 +68,47 @@ Config chính:
 - `conf_threshold: 0.1`
 
 Kết quả:
+- mAP@0.5: 0.6
+- Precision:
+- Recall:
+- Thời gian train/epoch: 4'30
+- Thời gian mAP validation: 55
+- Tổng epoch train: 60
+- Epoch tốt nhất:
+- Ghi chú:
+
+## v3_direct_resize_regularized_finetune
+
+Ngày:
+
+Mô tả:
+- Kế thừa direct resize `512x512`, không dùng letterbox.
+- Giữ ResNet50 pretrained backbone.
+- Chỉ fine-tune `resnet.layer4` sau warmup, các block backbone thấp hơn vẫn freeze.
+- Freeze BatchNorm stats của backbone pretrained khi train.
+- Thêm random erasing/cutout augmentation để giảm overfit.
+- Giữ CIoU loss, top-k anchor assignment, ignore mask.
+- Giữ quality-aware objectness nhẹ: target objectness = `0.75 + 0.25 * IoU`.
+- Giữ balanced image sampling và boost class weight cho `chair`.
+- Giữ optimizer AdamW param groups, channels-last, CuDNN benchmark.
+
+Config chính:
+- `image_size: 512`
+- `preserve_aspect: false`
+- `batch_size: 24`
+- `val_batch_size: 64`
+- `num_workers: 4`
+- `backbone_trainable: layer4`
+- `backbone_freeze_bn: true`
+- `random_erasing_prob: 0.25`
+- `head_channels: 192`
+- `neck_channels: 192`
+- `attention_heads: 0`
+- `balanced_sampling.enabled: true`
+- `class_weights.overrides.chair: 1.25`
+- `conf_threshold: 0.1`
+
+Kết quả:
 - mAP@0.5:
 - Precision:
 - Recall:
