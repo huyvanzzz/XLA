@@ -128,6 +128,9 @@ Mô tả:
 - Mục tiêu là giảm false positives, vì các version trước có số predictions rất cao và precision thấp.
 - Thêm horizontal flip TTA trong `predict.py`: chạy thêm ảnh lật ngang, flip bbox về ảnh gốc, rồi merge bằng NMS tự cài.
 - TTA chỉ bật ở inference mặc định, không bật trong validation train để không làm chậm epoch.
+- Thêm mosaic augmentation tự cài: mỗi sample có thể ghép 4 ảnh thành một ảnh train `512x512`.
+- Tắt mosaic từ epoch 55 để các epoch cuối fine-tune lại trên phân phối ảnh thật.
+- Trong lúc train chỉ dùng một ngưỡng cố định để tiết kiệm thời gian; threshold tuning nên làm sau bằng `predict.py`/config nếu cần.
 - Vẫn không dùng detector/NMS có sẵn; NMS và merge đều tự cài.
 
 Config chính:
@@ -135,31 +138,6 @@ Config chính:
 - `noobj_hard_negative_min: 256`
 - `inference.tta_hflip: true`
 - `validation_metric.tta_hflip: false`
-
-Kết quả:
-- mAP@0.5:
-- Precision:
-- Recall:
-- Thời gian train/epoch:
-- Thời gian mAP validation:
-- Thời gian predict val:
-- Tổng epoch train:
-- Epoch tốt nhất:
-- Ghi chú:
-
-## v5_mosaic_threshold_tuning
-
-Ngày:
-
-Mô tả:
-- Kế thừa v4.
-- Thêm mosaic augmentation tự cài: mỗi sample có thể ghép 4 ảnh thành một ảnh train `512x512`.
-- Tắt mosaic từ epoch 55 để các epoch cuối fine-tune lại trên phân phối ảnh thật.
-- Trong lúc train chỉ dùng một ngưỡng cố định để tiết kiệm thời gian; threshold tuning nên làm sau bằng `predict.py`/config nếu cần.
-- Vẫn direct resize `512x512`, không letterbox.
-- Vẫn from-scratch: không dùng detector/NMS có sẵn.
-
-Config chính:
 - `augmentation.mosaic_prob: 0.35`
 - `augmentation.close_mosaic_epoch: 55`
 - `validation_metric.tune: false`
