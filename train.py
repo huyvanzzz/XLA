@@ -50,6 +50,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--positive_anchor_topk", type=int)
     parser.add_argument("--ignore_anchor_iou", type=float)
     parser.add_argument("--objectness_iou_mix", type=float)
+    parser.add_argument("--noobj_hard_negative_ratio", type=float)
+    parser.add_argument("--noobj_hard_negative_min", type=int)
     parser.add_argument("--iou_aware_objectness", action="store_true")
     parser.add_argument("--no_iou_aware_objectness", action="store_true")
     parser.add_argument("--num_workers", type=int)
@@ -86,6 +88,8 @@ def apply_config(args: argparse.Namespace) -> tuple[argparse.Namespace, list[lis
         "positive_anchor_topk",
         "ignore_anchor_iou",
         "objectness_iou_mix",
+        "noobj_hard_negative_ratio",
+        "noobj_hard_negative_min",
         "iou_aware_objectness",
     ]:
         if getattr(args, name) is None:
@@ -606,6 +610,8 @@ def main() -> None:
         positive_anchor_topk=args.positive_anchor_topk,
         ignore_anchor_iou=args.ignore_anchor_iou,
         objectness_iou_mix=args.objectness_iou_mix,
+        noobj_hard_negative_ratio=args.noobj_hard_negative_ratio,
+        noobj_hard_negative_min=args.noobj_hard_negative_min,
     ).to(device)
     decay_backbone = []
     decay_detector = []
@@ -655,7 +661,14 @@ def main() -> None:
         raise ValueError("Enable validation_metric or validation_loss so best checkpoint can be selected.")
     best_score = float("-inf") if use_map_for_best else float("inf")
     epochs_without_improvement = 0
+    mosaic_closed = False
     for epoch in range(1, args.epochs + 1):
+        close_mosaic_epoch = int(config["augmentation"].get("close_mosaic_epoch", 0))
+        if close_mosaic_epoch > 0 and epoch >= close_mosaic_epoch and not mosaic_closed:
+            train_set.augment_config["mosaic_prob"] = 0.0
+            mosaic_closed = True
+            print(f"closing mosaic augmentation at epoch {epoch}")
+
         if config["multi_scale"]["enabled"]:
             train_size = int(random.choice(config["multi_scale"]["sizes"]))
             train_set.image_size = train_size
@@ -764,6 +777,8 @@ def main() -> None:
                 "positive_anchor_topk": args.positive_anchor_topk,
                 "ignore_anchor_iou": args.ignore_anchor_iou,
                 "objectness_iou_mix": args.objectness_iou_mix,
+                "noobj_hard_negative_ratio": args.noobj_hard_negative_ratio,
+                "noobj_hard_negative_min": args.noobj_hard_negative_min,
             },
             "lr": args.lr,
             "backbone_lr_mult": args.backbone_lr_mult,

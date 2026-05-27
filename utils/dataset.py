@@ -61,20 +61,10 @@ class DetectionDataset(Dataset):
 
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, dict[str, torch.Tensor | str | int]]:
         info = self.images[idx]
-        image_path = self.image_dir / str(info["file_name"])
-        image = Image.open(image_path).convert("RGB")
-        orig_w, orig_h = image.size
-
-        boxes = []
-        labels = []
-        for ann in info["annotations"]:
-            x1, y1, x2, y2 = [float(v) for v in ann["bbox"]]
-            if x2 > x1 and y2 > y1:
-                boxes.append([x1, y1, x2, y2])
-                labels.append(self.class_to_idx[ann["class"]])
-
-        boxes_t = torch.tensor(boxes, dtype=torch.float32)
-        labels_t = torch.tensor(labels, dtype=torch.long)
+        if self.augment and random.random() < float(self.augment_config.get("mosaic_prob", 0.0)):
+            image, boxes_t, labels_t, orig_w, orig_h = self._mosaic(idx)
+        else:
+            image, boxes_t, labels_t, orig_w, orig_h = self._load_raw(idx)
 
         if self.augment:
             image, boxes_t, labels_t = self._augment(image, boxes_t, labels_t)
@@ -103,6 +93,58 @@ class DetectionDataset(Dataset):
             "orig_height": int(orig_h),
         }
         return image_t, target
+
+    def _load_raw(self, idx: int) -> tuple[Image.Image, torch.Tensor, torch.Tensor, int, int]:
+        info = self.images[idx]
+        image_path = self.image_dir / str(info["file_name"])
+        image = Image.open(image_path).convert("RGB")
+        orig_w, orig_h = image.size
+
+        boxes = []
+        labels = []
+        for ann in info["annotations"]:
+            x1, y1, x2, y2 = [float(v) for v in ann["bbox"]]
+            if x2 > x1 and y2 > y1:
+                boxes.append([x1, y1, x2, y2])
+                labels.append(self.class_to_idx[ann["class"]])
+
+        boxes_t = torch.tensor(boxes, dtype=torch.float32)
+        labels_t = torch.tensor(labels, dtype=torch.long)
+        return image, boxes_t, labels_t, orig_w, orig_h
+
+    def _mosaic(self, idx: int) -> tuple[Image.Image, torch.Tensor, torch.Tensor, int, int]:
+        indices = [idx] + [random.randrange(len(self.images)) for _ in range(3)]
+        half = self.image_size // 2
+        canvas = Image.new("RGB", (self.image_size, self.image_size), (114, 114, 114))
+        all_boxes = []
+        all_labels = []
+        offsets = [(0, 0), (half, 0), (0, half), (half, half)]
+        first_w = first_h = self.image_size
+        for pos, source_idx in enumerate(indices):
+            image, boxes, labels, orig_w, orig_h = self._load_raw(source_idx)
+            if pos == 0:
+                first_w, first_h = orig_w, orig_h
+            resized = image.resize((half, half), Image.BILINEAR)
+            off_x, off_y = offsets[pos]
+            canvas.paste(resized, (off_x, off_y))
+            if boxes.numel() > 0:
+                boxes = boxes.clone()
+                boxes[:, [0, 2]] = boxes[:, [0, 2]] * (half / orig_w) + off_x
+                boxes[:, [1, 3]] = boxes[:, [1, 3]] * (half / orig_h) + off_y
+                boxes[:, 0::2].clamp_(0, self.image_size)
+                boxes[:, 1::2].clamp_(0, self.image_size)
+                wh = boxes[:, 2:] - boxes[:, :2]
+                keep = (wh[:, 0] >= 3) & (wh[:, 1] >= 3)
+                if keep.any():
+                    all_boxes.append(boxes[keep])
+                    all_labels.append(labels[keep])
+        if all_boxes:
+            boxes_t = torch.cat(all_boxes, dim=0)
+            labels_t = torch.cat(all_labels, dim=0)
+        else:
+            boxes_t = torch.empty((0, 4), dtype=torch.float32)
+            labels_t = torch.empty((0,), dtype=torch.long)
+        return canvas, boxes_t, labels_t, first_w, first_h
 
     def _augment(
         self,

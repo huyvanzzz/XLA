@@ -135,6 +135,53 @@ def decode_predictions(
     return results[:max_detections]
 
 
+def flip_detections_horizontally(detections: list[dict[str, object]], width: int) -> list[dict[str, object]]:
+    flipped = []
+    for item in detections:
+        x1, y1, x2, y2 = [float(v) for v in item["bbox"]]  # type: ignore[index]
+        flipped.append(
+            {
+                "class": item["class"],
+                "confidence": item["confidence"],
+                "bbox": [round(width - x2, 2), y1, round(width - x1, 2), y2],
+            }
+        )
+    return flipped
+
+
+def merge_detections(
+    detections: list[dict[str, object]],
+    classes: list[str],
+    nms_threshold: float,
+    nms_type: str = "hard",
+    max_detections: int = 100,
+) -> list[dict[str, object]]:
+    if not detections:
+        return []
+    results: list[dict[str, object]] = []
+    device = torch.device("cpu")
+    for class_name in classes:
+        class_items = [item for item in detections if item["class"] == class_name]
+        if not class_items:
+            continue
+        boxes = torch.tensor([item["bbox"] for item in class_items], dtype=torch.float32, device=device)
+        scores = torch.tensor([float(item["confidence"]) for item in class_items], dtype=torch.float32, device=device)
+        kept = soft_nms(boxes, scores, nms_threshold) if nms_type == "soft" else nms(boxes, scores, nms_threshold)
+        for idx in kept:
+            box = boxes[idx]
+            if box[2] <= box[0] or box[3] <= box[1]:
+                continue
+            results.append(
+                {
+                    "class": class_name,
+                    "confidence": round(float(scores[idx]), 6),
+                    "bbox": [round(float(v), 2) for v in box.tolist()],
+                }
+            )
+    results.sort(key=lambda item: float(item["confidence"]), reverse=True)
+    return results[:max_detections]
+
+
 def _decode_scale(
     pred: torch.Tensor,
     classes: list[str],

@@ -28,6 +28,8 @@ class YoloLoss(nn.Module):
         positive_anchor_topk: int = 3,
         ignore_anchor_iou: float = 0.5,
         objectness_iou_mix: float = 0.25,
+        noobj_hard_negative_ratio: float = 0.1,
+        noobj_hard_negative_min: int = 256,
     ) -> None:
         super().__init__()
         self.anchors = [[(float(w), float(h)) for w, h in scale] for scale in anchors]
@@ -45,6 +47,8 @@ class YoloLoss(nn.Module):
         self.positive_anchor_topk = max(1, int(positive_anchor_topk))
         self.ignore_anchor_iou = float(ignore_anchor_iou)
         self.objectness_iou_mix = min(max(float(objectness_iou_mix), 0.0), 1.0)
+        self.noobj_hard_negative_ratio = min(max(float(noobj_hard_negative_ratio), 0.0), 1.0)
+        self.noobj_hard_negative_min = max(1, int(noobj_hard_negative_min))
         if class_weights is not None:
             self.register_buffer("class_weights", torch.tensor(class_weights, dtype=torch.float32))
         else:
@@ -206,6 +210,8 @@ class YoloLoss(nn.Module):
                 pred_obj_logit[neg_mask],
                 obj_target[neg_mask],
                 normalizer=neg_mask.sum().clamp(min=1).float(),
+                hard_fraction=self.noobj_hard_negative_ratio,
+                hard_min=self.noobj_hard_negative_min,
             )
 
         num_scales = max(len(preds), 1)
@@ -232,14 +238,29 @@ class YoloLoss(nn.Module):
         }
         return total, logs
 
-    def _objectness_loss(self, logits: torch.Tensor, targets: torch.Tensor, normalizer: torch.Tensor) -> torch.Tensor:
+    def _objectness_loss(
+        self,
+        logits: torch.Tensor,
+        targets: torch.Tensor,
+        normalizer: torch.Tensor,
+        hard_fraction: float = 0.0,
+        hard_min: int = 1,
+    ) -> torch.Tensor:
+        if logits.numel() == 0:
+            return logits.sum() * 0.0
         bce = F.binary_cross_entropy_with_logits(logits, targets, reduction="none")
         if self.objectness_focal_gamma <= 0:
-            return bce.sum() / normalizer
-        probs = torch.sigmoid(logits)
-        pt = probs * targets + (1.0 - probs) * (1.0 - targets)
-        focal = (1.0 - pt).pow(self.objectness_focal_gamma)
-        return (focal * bce).sum() / normalizer
+            loss_vec = bce
+        else:
+            probs = torch.sigmoid(logits)
+            pt = probs * targets + (1.0 - probs) * (1.0 - targets)
+            focal = (1.0 - pt).pow(self.objectness_focal_gamma)
+            loss_vec = focal * bce
+        if hard_fraction > 0.0 and loss_vec.numel() > hard_min:
+            k = min(loss_vec.numel(), max(hard_min, int(loss_vec.numel() * hard_fraction)))
+            loss_vec = loss_vec.topk(k).values
+            normalizer = loss_vec.new_tensor(float(k))
+        return loss_vec.sum() / normalizer
 
     def _decode_boxes(self, pred: torch.Tensor, anchors: torch.Tensor) -> torch.Tensor:
         _, grid_h, grid_w, _, _ = pred.shape

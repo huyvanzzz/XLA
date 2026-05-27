@@ -11,7 +11,7 @@ from tqdm import tqdm
 from models.tiny_detector import TinyDetector
 from utils.config import get_anchors, load_config
 from utils.dataset import load_classes
-from utils.inference import decode_predictions, load_image_for_inference
+from utils.inference import decode_predictions, flip_detections_horizontally, load_image_for_inference, merge_detections
 
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
@@ -67,6 +67,7 @@ def main() -> None:
         args.conf_threshold = checkpoint.get("best_conf_threshold", args.conf_threshold)
     if cli_nms_threshold is None:
         args.nms_threshold = checkpoint.get("best_nms_threshold", args.nms_threshold)
+    tta_hflip = bool(config["inference"].get("tta_hflip", False))
 
     model = TinyDetector(num_classes=len(classes), num_anchors=[len(scale) for scale in anchors], **model_config).to(device)
     if channels_last:
@@ -93,6 +94,9 @@ def main() -> None:
                 memory_format=torch.channels_last if channels_last else torch.contiguous_format,
             )
             pred = model(batch_tensor)
+            pred_flip = None
+            if tta_hflip:
+                pred_flip = model(torch.flip(batch_tensor, dims=[3]))
             for idx, (image_path, (orig_w, orig_h)) in enumerate(zip(batch_paths, image_sizes)):
                 boxes = decode_predictions(
                     {"main": [scale[idx : idx + 1] for scale in pred["main"]]},
@@ -110,6 +114,30 @@ def main() -> None:
                     class_pre_nms_topk=args.class_pre_nms_topk,
                     preserve_aspect=preserve_aspect,
                 )
+                if pred_flip is not None:
+                    flip_boxes = decode_predictions(
+                        {"main": [scale[idx : idx + 1] for scale in pred_flip["main"]]},
+                        classes=classes,
+                        anchors=anchors,
+                        image_size=image_size,
+                        orig_width=orig_w,
+                        orig_height=orig_h,
+                        conf_threshold=args.conf_threshold,
+                        class_conf_thresholds=config["inference"].get("class_conf_thresholds", {}),
+                        nms_threshold=args.nms_threshold,
+                        nms_type=args.nms_type,
+                        max_detections=args.max_detections,
+                        pre_nms_topk=args.pre_nms_topk,
+                        class_pre_nms_topk=args.class_pre_nms_topk,
+                        preserve_aspect=preserve_aspect,
+                    )
+                    boxes = merge_detections(
+                        boxes + flip_detections_horizontally(flip_boxes, orig_w),
+                        classes=classes,
+                        nms_threshold=args.nms_threshold,
+                        nms_type=args.nms_type,
+                        max_detections=args.max_detections,
+                    )
                 predictions.append({"image_id": image_path.name, "boxes": boxes})
             progress.update(len(batch_paths))
 

@@ -43,7 +43,7 @@ Mô tả:
 - Balanced image sampling để tăng tần suất ảnh chứa class khó/ít hơn.
 - Boost class weight cho `chair` vì kết quả trước có AP chair thấp nhất.
 - Objectness quality-aware nhẹ: target objectness = `0.75 + 0.25 * IoU`, giúp ranking confidence tốt hơn nhưng không làm positive target quá thấp đầu train.
-- Tăng global inference/validation `conf_threshold` lên 0.10 để giảm false positives confidence thấp.
+- Dùng global inference/validation `conf_threshold` 0.08 để giữ recall khi chọn best theo mAP.
 - Thêm `class_conf_thresholds` trong config để sau này tune threshold riêng theo class mà không train lại.
 
 Config chính:
@@ -65,7 +65,7 @@ Config chính:
 - `class_weights.overrides.chair: 1.25`
 - `iou_aware_objectness: true`
 - `objectness_iou_mix: 0.25`
-- `conf_threshold: 0.1`
+- `conf_threshold: 0.08`
 
 Kết quả:
 - mAP@0.5: 0.6
@@ -109,11 +109,71 @@ Config chính:
 - `conf_threshold: 0.1`
 
 Kết quả:
+- mAP@0.5: 61.5
+- Precision:
+- Recall:
+- Thời gian train/epoch: 4'30
+- Thời gian mAP validation: 55s
+- Tổng epoch train: 70
+- Epoch tốt nhất: 60
+- Ghi chú:
+
+## v4_hard_negative_tta
+
+Ngày:
+
+Mô tả:
+- Kế thừa v3.
+- Thêm hard-negative mining cho no-objectness loss: chỉ tập trung phần loss background vào các negative anchors khó nhất.
+- Mục tiêu là giảm false positives, vì các version trước có số predictions rất cao và precision thấp.
+- Thêm horizontal flip TTA trong `predict.py`: chạy thêm ảnh lật ngang, flip bbox về ảnh gốc, rồi merge bằng NMS tự cài.
+- TTA chỉ bật ở inference mặc định, không bật trong validation train để không làm chậm epoch.
+- Vẫn không dùng detector/NMS có sẵn; NMS và merge đều tự cài.
+
+Config chính:
+- `noobj_hard_negative_ratio: 0.1`
+- `noobj_hard_negative_min: 256`
+- `inference.tta_hflip: true`
+- `validation_metric.tta_hflip: false`
+
+Kết quả:
 - mAP@0.5:
 - Precision:
 - Recall:
 - Thời gian train/epoch:
 - Thời gian mAP validation:
+- Thời gian predict val:
+- Tổng epoch train:
+- Epoch tốt nhất:
+- Ghi chú:
+
+## v5_mosaic_threshold_tuning
+
+Ngày:
+
+Mô tả:
+- Kế thừa v4.
+- Thêm mosaic augmentation tự cài: mỗi sample có thể ghép 4 ảnh thành một ảnh train `512x512`.
+- Tắt mosaic từ epoch 55 để các epoch cuối fine-tune lại trên phân phối ảnh thật.
+- Trong lúc train chỉ dùng một ngưỡng cố định để tiết kiệm thời gian; threshold tuning nên làm sau bằng `predict.py`/config nếu cần.
+- Vẫn direct resize `512x512`, không letterbox.
+- Vẫn from-scratch: không dùng detector/NMS có sẵn.
+
+Config chính:
+- `augmentation.mosaic_prob: 0.35`
+- `augmentation.close_mosaic_epoch: 55`
+- `validation_metric.tune: false`
+- `validation_metric.tune_every: 5`
+- `validation_metric.conf_threshold: 0.08`
+- `validation_metric.nms_threshold: 0.5`
+
+Kết quả:
+- mAP@0.5:
+- Precision:
+- Recall:
+- Thời gian train/epoch:
+- Thời gian mAP validation:
+- Thời gian predict val:
 - Tổng epoch train:
 - Epoch tốt nhất:
 - Ghi chú:
