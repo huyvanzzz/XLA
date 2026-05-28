@@ -22,6 +22,7 @@ Muc dich file nay: dung de mo chat moi ma van tiep tuc dung huong. Doc file nay 
 - `validation_loss.enabled: false`.
 - Bat dau tinh mAP va save best tu epoch 30 de tiet kiem thoi gian.
 - Trong train chi dung mot bo threshold: `conf_threshold: 0.08`, `nms_threshold: 0.5`.
+- Post-processing active: DIoU-NMS tu cai, khong dung torchvision.
 - Khong dung threshold grid/tuning trong train.
 
 ## Config hien tai
@@ -43,8 +44,10 @@ Diem quan trong:
 - `inference.tta_hflip: false`
 - `validation_metric.start_epoch: 30`
 - `validation_metric.tune: false`
+- `inference.nms_type: diou`
+- `validation_metric.nms_type: diou`
 
-Model hien tai:
+Model hien tai da reset ve v3:
 - `backbone: resnet50`
 - `pretrained: true`
 - `neck_channels: 192`
@@ -52,18 +55,18 @@ Model hien tai:
 - `attention_heads: 0`
 - `aux_head: true`
 - `aux_head_close_epoch: 30`
-- `decoupled_head: true`
+- `decoupled_head: false`
 - `cls_head_channels: 128`
 
-Loss/assignment hien tai:
-- `assignment_strategy: task_aligned`
-- `positive_anchor_topk: 8`
+Loss/assignment hien tai da reset ve v3:
+- `assignment_strategy: legacy`
+- `positive_anchor_topk: 3`
 - `task_aligned_alpha: 0.5`
 - `task_aligned_beta: 6.0`
 - `task_aligned_center_radius: 2.5`
 - `task_aligned_min_iou: 0.05`
 - `iou_aware_objectness: true`
-- `objectness_iou_mix: 0.4`
+- `objectness_iou_mix: 0.25`
 - `noobj_hard_negative_ratio: 0.0`
 
 ## Version da ghi
@@ -73,16 +76,19 @@ Xem chi tiet trong `EXPERIMENTS.md`.
 - v1: baseline YOLO-style ResNet50 pretrained, mAP public val `0.604047`.
 - v2/v3: direct resize 512, train nhanh hon; user bao v3 len khoang `0.615`, train/epoch khoang `4'30`, best gan epoch 60.
 - v4: hard-negative + mosaic + TTA, ket qua rat te; da reset/tat.
-- v5 hien tai: Task-Aligned Assignment + Decoupled Detection Head + tat aux head tu epoch 30. Chua co ket qua train day du luc viet summary.
+- v5: Task-Aligned Assignment + Decoupled Detection Head + tat aux head tu epoch 30. Bi reset vi train lau va khong on.
+- Hien tai active: quay ve v3 nhanh/on dinh. Khong dung task-aligned, khong dung decoupled head. Cai tien nhe la tat aux head tu epoch 30 va dung DIoU-NMS trong post-processing.
 
-## Ly do v5
+## Ly do reset ve v3
 
-V3 bi gioi han quanh `0.615` mAP va precision thap. Thay vi them augment nang, v5 doi hai diem co tac dong truc tiep vao detection:
+V5 lam train cham do task-aligned phai decode nhieu candidate va tinh IoU de assign positive; decoupled head cung them compute. Vi ket qua khong on, active config da reset ve v3 de giu toc do train.
 
-- Task-Aligned Assignment: positive sample duoc chon theo ca classification confidence va IoU hien tai, khong chi theo anchor shape.
-- Decoupled Head: bbox/objectness va classification co tower rieng, giam xung dot giua localization va classification.
-
-Inference output van giu format cu `[x, y, w, h, obj, class...]`, nen `predict.py` va NMS khong can doi.
+Neu tiep tuc cai tien, uu tien cac huong khong tang thoi gian train:
+- post-processing / per-class threshold sau train;
+- DIoU-NMS dang duoc bat mac dinh vi khong tang train time;
+- checkpoint/resume cho Kaggle;
+- ablation nhe trong config, khong them assignment dong nang;
+- giam validation/predict overhead, khong them TTA/grid tuning trong train.
 
 ## Dieu can tranh
 
@@ -97,16 +103,13 @@ Inference output van giu format cu `[x, y, w, h, obj, class...]`, nen `predict.p
 
 - `python -m py_compile train.py predict.py utils\config.py utils\dataset.py utils\loss.py utils\inference.py models\tiny_detector.py`
 - `python -m unittest test_predict_cli.py`
-- Forward test voi `TinyDetector(... decoupled_head=True ...)` output dung shape:
-  - main: `[B,64,64,3,10]`, `[B,32,32,3,10]`, `[B,16,16,3,10]` voi input `512x512`
-  - aux tuong tu khi dang train
-- Loss/backward test gia voi `assignment_strategy='task_aligned'` OK.
+- Forward/loss v5 tung test OK, nhung khong con la active config.
 
 ## Neu tiep tuc cai tien
 
 Thu tu nen lam:
 
-1. Train/evaluate v5 truoc, ghi mAP/precision/recall/time vao `EXPERIMENTS.md`.
-2. Neu v5 tot hon v3: fine-tune nhe quanh assignment/head, vi huong nay co tin hieu.
-3. Neu v5 te hon v3: revert `decoupled_head` hoac `task_aligned` rieng le de biet thanh phan nao gay te.
+1. Train/evaluate active v3-reset truoc, ghi mAP/precision/recall/time vao `EXPERIMENTS.md`.
+2. Neu can cai tien ma khong tang train time: lam post-hoc threshold/NMS per class sau train, hoac sua predict/evaluate pipeline.
+3. Neu can sua model/loss: chi them cai co chi phi gan nhu bang 0; khong quay lai task-aligned/decoupled neu user khong chap nhan train cham.
 4. Neu precision van qua thap: xem per-class predictions, dac biet `chair`; can nhac post-hoc class threshold tuning ngoai train, khong bat grid trong train.

@@ -196,3 +196,47 @@ Kết quả:
 - Tổng epoch train:
 - Epoch tốt nhất:
 - Ghi chú:
+
+Trạng thái:
+- Version này bị loại/reset vì train lâu và kết quả không ổn.
+- Config hiện tại đã quay về v3: `assignment_strategy: legacy`, `decoupled_head: false`, `objectness_iou_mix: 0.25`; chỉ giữ cải tiến nhẹ là tắt aux head từ epoch 30.
+
+## v6_v3_reset_lightweight
+
+Ngày:
+
+Mô tả:
+- Reset active config về hướng v3 để giữ tốc độ train.
+- Không dùng Task-Aligned Assignment vì phần này làm train chậm đáng kể.
+- Không dùng Decoupled Detection Head vì tăng compute và chưa chứng minh tốt hơn.
+- Giữ direct resize `512x512`, không letterbox.
+- Giữ ResNet50 pretrained backbone, chỉ fine-tune `resnet.layer4`.
+- Giữ CIoU loss, legacy top-k anchor assignment, quality-aware objectness nhẹ.
+- Tắt auxiliary head từ epoch 30 để train giai đoạn sau nhẹ hơn, không tăng thời gian train.
+- Đổi post-processing từ hard NMS sang DIoU-NMS tự cài để xử lý các box trùng/lệch tâm tốt hơn mà không làm train chậm.
+- Giữ mAP làm tiêu chí chọn `best.pth`, bắt đầu tính từ epoch 30.
+- Hướng cải tiến tiếp theo nên nằm ngoài train hoặc chi phí rất thấp: post-hoc threshold/NMS per class, resume checkpoint, hoặc tối ưu validation/predict.
+
+Config chính:
+- `image_size: 512`
+- `preserve_aspect: false`
+- `batch_size: 24`
+- `val_batch_size: 64`
+- `assignment_strategy: legacy`
+- `positive_anchor_topk: 3`
+- `objectness_iou_mix: 0.25`
+- `decoupled_head: false`
+- `aux_head_close_epoch: 30`
+- `conf_threshold: 0.08`
+- `nms_threshold: 0.5`
+- `nms_type: diou`
+
+Kết quả:
+- mAP@0.5:
+- Precision:
+- Recall:
+- Thời gian train/epoch:
+- Thời gian mAP validation:
+- Tổng epoch train:
+- Epoch tốt nhất:
+- Ghi chú:

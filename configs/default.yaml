@@ -47,7 +47,7 @@ model:
   elan_depth: 2
   aux_head: true
   aux_head_close_epoch: 30
-  decoupled_head: true
+  decoupled_head: false
   cls_head_channels: 128
 
 anchors:
@@ -78,10 +78,10 @@ loss_weights:
   aux_weight: 0.4
   objectness_focal_gamma: 1.5
   iou_aware_objectness: true
-  assignment_strategy: task_aligned
-  positive_anchor_topk: 8
+  assignment_strategy: legacy
+  positive_anchor_topk: 3
   ignore_anchor_iou: 0.5
-  objectness_iou_mix: 0.4
+  objectness_iou_mix: 0.25
   task_aligned_alpha: 0.5
   task_aligned_beta: 6.0
   task_aligned_center_radius: 2.5
@@ -94,20 +94,20 @@ inference:
   class_conf_thresholds: {}
   tta_hflip: false
   nms_threshold: 0.5
-  nms_type: hard
+  nms_type: diou
   max_detections: 100
   pre_nms_topk: 300
   class_pre_nms_topk: 100
 
 validation_metric:
   enabled: true
-  start_epoch: 40
+  start_epoch: 30
   every: 1
   conf_threshold: 0.08
   class_conf_thresholds: {}
   tta_hflip: false
   nms_threshold: 0.5
-  nms_type: hard
+  nms_type: diou
   pre_nms_topk: 300
   class_pre_nms_topk: 100
   tune: false
