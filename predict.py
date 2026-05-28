@@ -26,7 +26,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--classes", default="public/classes.json")
     parser.add_argument("--conf_threshold", type=float)
     parser.add_argument("--nms_threshold", type=float)
-    parser.add_argument("--nms_type", choices=["hard", "soft"])
+    parser.add_argument("--nms_type", choices=["hard", "soft", "diou"])
     parser.add_argument("--max_detections", type=int)
     parser.add_argument("--pre_nms_topk", type=int)
     parser.add_argument("--class_pre_nms_topk", type=int)

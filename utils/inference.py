@@ -5,7 +5,7 @@ from pathlib import Path
 import torch
 from PIL import Image
 
-from utils.box_ops import clip_boxes, nms, soft_nms
+from utils.box_ops import clip_boxes, diou_nms, nms, soft_nms
 from utils.dataset import DetectionDataset
 
 
@@ -117,6 +117,8 @@ def decode_predictions(
             class_boxes = class_boxes[class_top_idx]
         if nms_type == "soft":
             kept = soft_nms(class_boxes, class_scores, nms_threshold)
+        elif nms_type == "diou":
+            kept = diou_nms(class_boxes, class_scores, nms_threshold)
         else:
             kept = nms(class_boxes, class_scores, nms_threshold)
         for idx in kept:
@@ -166,7 +168,12 @@ def merge_detections(
             continue
         boxes = torch.tensor([item["bbox"] for item in class_items], dtype=torch.float32, device=device)
         scores = torch.tensor([float(item["confidence"]) for item in class_items], dtype=torch.float32, device=device)
-        kept = soft_nms(boxes, scores, nms_threshold) if nms_type == "soft" else nms(boxes, scores, nms_threshold)
+        if nms_type == "soft":
+            kept = soft_nms(boxes, scores, nms_threshold)
+        elif nms_type == "diou":
+            kept = diou_nms(boxes, scores, nms_threshold)
+        else:
+            kept = nms(boxes, scores, nms_threshold)
         for idx in kept:
             box = boxes[idx]
             if box[2] <= box[0] or box[3] <= box[1]:

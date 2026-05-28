@@ -79,6 +79,33 @@ def nms(boxes: torch.Tensor, scores: torch.Tensor, iou_threshold: float) -> torc
     return torch.stack(keep).long()
 
 
+def diou_nms(boxes: torch.Tensor, scores: torch.Tensor, iou_threshold: float) -> torch.Tensor:
+    if boxes.numel() == 0:
+        return torch.empty((0,), dtype=torch.long, device=boxes.device)
+
+    order = scores.argsort(descending=True)
+    keep: list[torch.Tensor] = []
+    while order.numel() > 0:
+        current = order[0]
+        keep.append(current)
+        if order.numel() == 1:
+            break
+        current_box = boxes[current].unsqueeze(0)
+        remaining = boxes[order[1:]]
+        ious = box_iou(current_box, remaining).squeeze(0)
+
+        current_center = (current_box[:, :2] + current_box[:, 2:]) * 0.5
+        remaining_centers = (remaining[:, :2] + remaining[:, 2:]) * 0.5
+        center_dist = (remaining_centers - current_center).pow(2).sum(dim=1)
+        enc_lt = torch.min(current_box[:, :2], remaining[:, :2])
+        enc_rb = torch.max(current_box[:, 2:], remaining[:, 2:])
+        enc_diag = (enc_rb - enc_lt).pow(2).sum(dim=1).clamp(min=1e-6)
+        dious = ious - center_dist / enc_diag
+
+        order = order[1:][dious <= iou_threshold]
+    return torch.stack(keep).long()
+
+
 def soft_nms(
     boxes: torch.Tensor,
     scores: torch.Tensor,
