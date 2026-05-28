@@ -118,7 +118,7 @@ Kết quả:
 - Epoch tốt nhất: 60
 - Ghi chú:
 
-## v4_hard_negative_tta
+## v4_hard_negative_tta Rất tệ
 
 Ngày:
 
@@ -134,11 +134,11 @@ Mô tả:
 - Vẫn không dùng detector/NMS có sẵn; NMS và merge đều tự cài.
 
 Config chính:
-- `noobj_hard_negative_ratio: 0.1`
+- `noobj_hard_negative_ratio: 0.1` (đã tắt lại trong config hiện tại)
 - `noobj_hard_negative_min: 256`
-- `inference.tta_hflip: true`
+- `inference.tta_hflip: true` (đã tắt lại trong config hiện tại)
 - `validation_metric.tta_hflip: false`
-- `augmentation.mosaic_prob: 0.35`
+- `augmentation.mosaic_prob: 0.35` (đã tắt lại trong config hiện tại)
 - `augmentation.close_mosaic_epoch: 55`
 - `validation_metric.tune: false`
 - `validation_metric.tune_every: 5`
@@ -152,6 +152,47 @@ Kết quả:
 - Thời gian train/epoch:
 - Thời gian mAP validation:
 - Thời gian predict val:
+- Tổng epoch train:
+- Epoch tốt nhất:
+- Ghi chú:
+
+Trạng thái:
+- Version này bị loại vì kết quả tệ.
+- Config hiện tại đã reset về hướng v3: không mosaic, không hard-negative mining, không hflip TTA.
+
+## v5_task_aligned_assignment
+
+Ngày:
+
+Mô tả:
+- Kế thừa v3: direct resize `512x512`, ResNet50 pretrained backbone, chỉ fine-tune `resnet.layer4`, không letterbox, không mosaic, không TTA.
+- Hướng cải tiến chính là thay label assignment cũ bằng Task-Aligned Assignment, dựa trên ý tưởng YOLOv6/TOOD: positive sample được chọn theo cả classification confidence và IoU của box hiện tại.
+- Vẫn giữ anchor-based head from scratch, nhưng target không còn chỉ dựa vào anchor width/height tại một cell nữa.
+- Positive target objectness được gắn theo chất lượng box: `0.6 + 0.4 * IoU`, giúp confidence ranking gần hơn với bbox quality.
+- Đổi detection head sang decoupled head: bbox/objectness tower và classification tower riêng, giúp hai nhiệm vụ không tranh cùng feature cuối.
+- Tắt auxiliary detection heads từ epoch 30 để giảm compute giai đoạn sau và tránh aux loss kéo model quá lâu.
+- Mục tiêu: giảm positive kém chất lượng, tăng chất lượng classification/localization, giảm FP sau NMS, tăng AP mà không làm predict/validation chậm hơn vì output inference không đổi; train sau epoch 30 cũng nhẹ hơn.
+
+Config chính:
+- `assignment_strategy: task_aligned`
+- `positive_anchor_topk: 8`
+- `task_aligned_alpha: 0.5`
+- `task_aligned_beta: 6.0`
+- `task_aligned_center_radius: 2.5`
+- `task_aligned_min_iou: 0.05`
+- `objectness_iou_mix: 0.4`
+- `model.decoupled_head: true`
+- `model.cls_head_channels: 128`
+- `model.aux_head_close_epoch: 30`
+- `conf_threshold: 0.08`
+- `nms_threshold: 0.5`
+
+Kết quả:
+- mAP@0.5:
+- Precision:
+- Recall:
+- Thời gian train/epoch:
+- Thời gian mAP validation:
 - Tổng epoch train:
 - Epoch tốt nhất:
 - Ghi chú:

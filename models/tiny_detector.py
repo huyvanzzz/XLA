@@ -268,6 +268,58 @@ class DetectionHead(nn.Module):
             bias[:, 4].fill_(math.log(prior / (1.0 - prior)))
 
 
+class DecoupledDetectionHead(nn.Module):
+    """Separate regression/objectness and classification towers for task-specific features."""
+
+    def __init__(
+        self,
+        in_channels: int,
+        head_channels: int,
+        cls_channels: int,
+        num_anchors: int,
+        pred_dim: int,
+        num_classes: int,
+        dropout: float,
+    ) -> None:
+        super().__init__()
+        self.reg_tower = nn.Sequential(
+            ConvBNAct(in_channels, head_channels, kernel_size=3),
+            RepConv(head_channels),
+            nn.Dropout2d(dropout) if dropout > 0 else nn.Identity(),
+            nn.Conv2d(head_channels, num_anchors * 5, kernel_size=1),
+        )
+        self.cls_tower = nn.Sequential(
+            ConvBNAct(in_channels, cls_channels, kernel_size=3),
+            RepConv(cls_channels),
+            nn.Dropout2d(dropout) if dropout > 0 else nn.Identity(),
+            nn.Conv2d(cls_channels, num_anchors * num_classes, kernel_size=1),
+        )
+        self.num_anchors = num_anchors
+        self.pred_dim = pred_dim
+        self.num_classes = num_classes
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        reg_obj = self.reg_tower(x)
+        cls = self.cls_tower(x)
+        n, _, h, w = reg_obj.shape
+        reg_obj = reg_obj.view(n, self.num_anchors, 5, h, w)
+        cls = cls.view(n, self.num_anchors, self.num_classes, h, w)
+        y = torch.cat([reg_obj, cls], dim=2)
+        return y.permute(0, 3, 4, 1, 2).contiguous()
+
+    def initialize_biases(self, objectness_prior: float = 0.01) -> None:
+        final_reg = self.reg_tower[-1]
+        final_cls = self.cls_tower[-1]
+        if isinstance(final_reg, nn.Conv2d) and final_reg.bias is not None:
+            prior = min(max(float(objectness_prior), 1e-4), 1.0 - 1e-4)
+            bias = final_reg.bias.view(self.num_anchors, 5)
+            with torch.no_grad():
+                bias[:, 4].fill_(math.log(prior / (1.0 - prior)))
+        if isinstance(final_cls, nn.Conv2d) and final_cls.bias is not None:
+            with torch.no_grad():
+                final_cls.bias.zero_()
+
+
 class TinyDetector(nn.Module):
     """YOLO-style detector with configurable backbone, RepConv heads, aux heads, and 3 scales."""
 
@@ -283,6 +335,8 @@ class TinyDetector(nn.Module):
         dropout: float = 0.05,
         elan_depth: int = 2,
         aux_head: bool = True,
+        decoupled_head: bool = False,
+        cls_head_channels: int | None = None,
         backbone: str = "resnet50",
         pretrained: bool = True,
         **_: object,
@@ -321,22 +375,43 @@ class TinyDetector(nn.Module):
         self.backbone_name = backbone
         self.neck = FPNPANNeck(feature_channels, out_channels=neck_channels, attention_heads=attention_heads)
         feature_channels = [neck_channels, neck_channels, neck_channels]
+        cls_channels = int(cls_head_channels or max(head_channels // 2, 64))
+        head_cls = DecoupledDetectionHead if decoupled_head else DetectionHead
 
-        self.main_heads = nn.ModuleList(
-            [
-                DetectionHead(feature_channels[0], head_channels, self.num_anchors[0], self.pred_dim, dropout),
-                DetectionHead(feature_channels[1], head_channels, self.num_anchors[1], self.pred_dim, dropout),
-                DetectionHead(feature_channels[2], head_channels, self.num_anchors[2], self.pred_dim, dropout),
-            ]
-        )
+        if decoupled_head:
+            self.main_heads = nn.ModuleList(
+                [
+                    head_cls(feature_channels[0], head_channels, cls_channels, self.num_anchors[0], self.pred_dim, num_classes, dropout),
+                    head_cls(feature_channels[1], head_channels, cls_channels, self.num_anchors[1], self.pred_dim, num_classes, dropout),
+                    head_cls(feature_channels[2], head_channels, cls_channels, self.num_anchors[2], self.pred_dim, num_classes, dropout),
+                ]
+            )
+        else:
+            self.main_heads = nn.ModuleList(
+                [
+                    head_cls(feature_channels[0], head_channels, self.num_anchors[0], self.pred_dim, dropout),
+                    head_cls(feature_channels[1], head_channels, self.num_anchors[1], self.pred_dim, dropout),
+                    head_cls(feature_channels[2], head_channels, self.num_anchors[2], self.pred_dim, dropout),
+                ]
+            )
         self.aux_head_enabled = aux_head
-        self.aux_heads = nn.ModuleList(
-            [
-                DetectionHead(feature_channels[0], head_channels // 2, self.num_anchors[0], self.pred_dim, dropout),
-                DetectionHead(feature_channels[1], head_channels // 2, self.num_anchors[1], self.pred_dim, dropout),
-                DetectionHead(feature_channels[2], head_channels // 2, self.num_anchors[2], self.pred_dim, dropout),
-            ]
-        )
+        if decoupled_head:
+            aux_cls_channels = max(cls_channels // 2, 32)
+            self.aux_heads = nn.ModuleList(
+                [
+                    DecoupledDetectionHead(feature_channels[0], head_channels // 2, aux_cls_channels, self.num_anchors[0], self.pred_dim, num_classes, dropout),
+                    DecoupledDetectionHead(feature_channels[1], head_channels // 2, aux_cls_channels, self.num_anchors[1], self.pred_dim, num_classes, dropout),
+                    DecoupledDetectionHead(feature_channels[2], head_channels // 2, aux_cls_channels, self.num_anchors[2], self.pred_dim, num_classes, dropout),
+                ]
+            )
+        else:
+            self.aux_heads = nn.ModuleList(
+                [
+                    DetectionHead(feature_channels[0], head_channels // 2, self.num_anchors[0], self.pred_dim, dropout),
+                    DetectionHead(feature_channels[1], head_channels // 2, self.num_anchors[1], self.pred_dim, dropout),
+                    DetectionHead(feature_channels[2], head_channels // 2, self.num_anchors[2], self.pred_dim, dropout),
+                ]
+            )
         for head in list(self.main_heads) + list(self.aux_heads):
             head.initialize_biases(objectness_prior=objectness_prior)
 

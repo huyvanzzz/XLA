@@ -546,6 +546,7 @@ def main() -> None:
         class_weights = compute_class_weights(args.train_data, classes)
         class_weights = apply_class_weight_overrides(class_weights, classes, config["class_weights"].get("overrides"))
         print(f"class weights: {class_weights}")
+    loss_weights = config["loss_weights"]
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     checkpoint_dir = Path(args.checkpoint_dir)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
@@ -612,6 +613,11 @@ def main() -> None:
         objectness_iou_mix=args.objectness_iou_mix,
         noobj_hard_negative_ratio=args.noobj_hard_negative_ratio,
         noobj_hard_negative_min=args.noobj_hard_negative_min,
+        assignment_strategy=str(loss_weights.get("assignment_strategy", "legacy")),
+        task_aligned_alpha=float(loss_weights.get("task_aligned_alpha", 0.5)),
+        task_aligned_beta=float(loss_weights.get("task_aligned_beta", 6.0)),
+        task_aligned_center_radius=float(loss_weights.get("task_aligned_center_radius", 2.5)),
+        task_aligned_min_iou=float(loss_weights.get("task_aligned_min_iou", 0.05)),
     ).to(device)
     decay_backbone = []
     decay_detector = []
@@ -662,6 +668,7 @@ def main() -> None:
     best_score = float("-inf") if use_map_for_best else float("inf")
     epochs_without_improvement = 0
     mosaic_closed = False
+    aux_head_closed = False
     for epoch in range(1, args.epochs + 1):
         close_mosaic_epoch = int(config["augmentation"].get("close_mosaic_epoch", 0))
         if close_mosaic_epoch > 0 and epoch >= close_mosaic_epoch and not mosaic_closed:
@@ -683,6 +690,12 @@ def main() -> None:
             print(f"freezing backbone for first {freeze_backbone_epochs} epoch(s)")
         if epoch == freeze_backbone_epochs + 1 and freeze_backbone_epochs > 0:
             print(f"unfreezing backbone mode={backbone_trainable}")
+        aux_head_close_epoch = int(model_config.get("aux_head_close_epoch", 0))
+        if bool(model_config.get("aux_head", True)) and aux_head_close_epoch > 0:
+            model.aux_head_enabled = epoch < aux_head_close_epoch
+            if epoch >= aux_head_close_epoch and not aux_head_closed:
+                aux_head_closed = True
+                print(f"closing auxiliary detection heads at epoch {epoch}")
 
         train_logs = run_epoch(
             model,
@@ -779,6 +792,11 @@ def main() -> None:
                 "objectness_iou_mix": args.objectness_iou_mix,
                 "noobj_hard_negative_ratio": args.noobj_hard_negative_ratio,
                 "noobj_hard_negative_min": args.noobj_hard_negative_min,
+                "assignment_strategy": str(loss_weights.get("assignment_strategy", "legacy")),
+                "task_aligned_alpha": float(loss_weights.get("task_aligned_alpha", 0.5)),
+                "task_aligned_beta": float(loss_weights.get("task_aligned_beta", 6.0)),
+                "task_aligned_center_radius": float(loss_weights.get("task_aligned_center_radius", 2.5)),
+                "task_aligned_min_iou": float(loss_weights.get("task_aligned_min_iou", 0.05)),
             },
             "lr": args.lr,
             "backbone_lr_mult": args.backbone_lr_mult,
@@ -788,6 +806,7 @@ def main() -> None:
             "freeze_backbone_epochs": freeze_backbone_epochs,
             "backbone_trainable": backbone_trainable,
             "backbone_freeze_bn": freeze_backbone_bn,
+            "aux_head_close_epoch": int(model_config.get("aux_head_close_epoch", 0)),
             "epoch": epoch,
             "val_loss": val_logs["loss"] if val_logs is not None else None,
             "val_map50": metric_logs["map50"] if metric_logs is not None else None,

@@ -24,7 +24,7 @@ validation_loss:
   enabled: false
 
 augmentation:
-  mosaic_prob: 0.35
+  mosaic_prob: 0.0
   close_mosaic_epoch: 55
   random_crop_prob: 0.2
   min_crop_scale: 0.8
@@ -46,6 +46,9 @@ model:
   dropout: 0.1
   elan_depth: 2
   aux_head: true
+  aux_head_close_epoch: 30
+  decoupled_head: true
+  cls_head_channels: 128
 
 anchors:
   auto: true
@@ -75,16 +78,21 @@ loss_weights:
   aux_weight: 0.4
   objectness_focal_gamma: 1.5
   iou_aware_objectness: true
-  positive_anchor_topk: 3
+  assignment_strategy: task_aligned
+  positive_anchor_topk: 8
   ignore_anchor_iou: 0.5
-  objectness_iou_mix: 0.25
-  noobj_hard_negative_ratio: 0.1
+  objectness_iou_mix: 0.4
+  task_aligned_alpha: 0.5
+  task_aligned_beta: 6.0
+  task_aligned_center_radius: 2.5
+  task_aligned_min_iou: 0.05
+  noobj_hard_negative_ratio: 0.0
   noobj_hard_negative_min: 256
 
 inference:
   conf_threshold: 0.08
   class_conf_thresholds: {}
-  tta_hflip: true
+  tta_hflip: false
   nms_threshold: 0.5
   nms_type: hard
   max_detections: 100
@@ -93,7 +101,7 @@ inference:
 
 validation_metric:
   enabled: true
-  start_epoch: 30
+  start_epoch: 40
   every: 1
   conf_threshold: 0.08
   class_conf_thresholds: {}
