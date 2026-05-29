@@ -40,7 +40,7 @@ DEFAULT_CONFIG = {
         "random_erasing_max_area": 0.12,
     },
     "model": {
-        "backbone": "resnet50",
+        "backbone": "convnext_small",
         "pretrained": True,
         "base_channels": 40,
         "head_channels": 192,

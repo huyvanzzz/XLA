@@ -47,8 +47,8 @@ Diem quan trong:
 - `inference.nms_type: diou`
 - `validation_metric.nms_type: diou`
 
-Model hien tai da reset ve v3:
-- `backbone: resnet50`
+Model hien tai:
+- `backbone: convnext_small`
 - `pretrained: true`
 - `neck_channels: 192`
 - `head_channels: 192`
@@ -77,11 +77,13 @@ Xem chi tiet trong `EXPERIMENTS.md`.
 - v2/v3: direct resize 512, train nhanh hon; user bao v3 len khoang `0.615`, train/epoch khoang `4'30`, best gan epoch 60.
 - v4: hard-negative + mosaic + TTA, ket qua rat te; da reset/tat.
 - v5: Task-Aligned Assignment + Decoupled Detection Head + tat aux head tu epoch 30. Bi reset vi train lau va khong on.
-- Hien tai active: quay ve v3 nhanh/on dinh. Khong dung task-aligned, khong dung decoupled head. Cai tien nhe la tat aux head tu epoch 30 va dung DIoU-NMS trong post-processing.
+- Hien tai active: v7 dung ConvNeXt-Small pretrained tu cai lam backbone. Khong dung task-aligned, khong dung decoupled head. Cai tien nhe la tat aux head tu epoch 30 va dung DIoU-NMS trong post-processing.
 
 ## Ly do reset ve v3
 
 V5 lam train cham do task-aligned phai decode nhieu candidate va tinh IoU de assign positive; decoupled head cung them compute. Vi ket qua khong on, active config da reset ve v3 de giu toc do train.
+
+Sau do da them v7: thay ResNet50 pretrained bang ConvNeXt-Small pretrained. ConvNeXt-Small manh hon Tiny va ResNet50 ve feature, nhung co the ton VRAM/thoi gian hon. Neu Kaggle OOM, giam `batch_size` tu 24 xuong 16.
 
 Neu tiep tuc cai tien, uu tien cac huong khong tang thoi gian train:
 - post-processing / per-class threshold sau train;

@@ -321,7 +321,7 @@ class ModelEMA:
 
 
 def _is_backbone_parameter(name: str) -> bool:
-    return name.startswith(("resnet", "stem", "down3", "down4", "down5", "elan3", "elan4", "elan5"))
+    return name.startswith(("resnet", "convnext", "stem", "down3", "down4", "down5", "elan3", "elan4", "elan5"))
 
 
 def _is_trainable_backbone_parameter(name: str, mode: str) -> bool:
@@ -339,6 +339,14 @@ def _is_trainable_backbone_parameter(name: str, mode: str) -> bool:
         if mode in {"layer2_layer3_layer4", "layer234"}:
             return name.startswith(("resnet.layer2", "resnet.layer3", "resnet.layer4"))
         return False
+    if name.startswith("convnext."):
+        if mode == "layer4":
+            return name.startswith("convnext.stage4")
+        if mode in {"layer3_layer4", "layer34"}:
+            return name.startswith(("convnext.stage3", "convnext.stage4"))
+        if mode in {"layer2_layer3_layer4", "layer234"}:
+            return name.startswith(("convnext.stage2", "convnext.stage3", "convnext.stage4"))
+        return False
     return mode == "all"
 
 
@@ -352,7 +360,7 @@ def set_backbone_trainable(model: TinyDetector, warmup_frozen: bool, trainable_m
 
 def set_frozen_feature_extractor_eval(model: TinyDetector) -> None:
     for name, module in model.named_children():
-        if name in {"resnet", "stem", "down3", "down4", "down5", "elan3", "elan4", "elan5"}:
+        if name in {"resnet", "convnext", "stem", "down3", "down4", "down5", "elan3", "elan4", "elan5"}:
             module.eval()
 
 
@@ -628,7 +636,7 @@ def main() -> None:
             if not parameter.requires_grad:
                 continue
             full_name = f"{module_name}.{param_name}" if module_name else param_name
-            is_backbone = full_name.startswith(("resnet", "stem", "down3", "down4", "down5", "elan3", "elan4", "elan5"))
+            is_backbone = full_name.startswith(("resnet", "convnext", "stem", "down3", "down4", "down5", "elan3", "elan4", "elan5"))
             is_no_decay = param_name.endswith("bias") or isinstance(module, (torch.nn.BatchNorm2d, torch.nn.LayerNorm))
             if is_backbone and is_no_decay:
                 no_decay_backbone.append(parameter)

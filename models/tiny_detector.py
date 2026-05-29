@@ -20,6 +20,117 @@ class ConvBNAct(nn.Module):
         return self.block(x)
 
 
+class LayerNorm2d(nn.LayerNorm):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = x.permute(0, 2, 3, 1)
+        x = super().forward(x)
+        return x.permute(0, 3, 1, 2)
+
+
+class ConvNeXtBlock(nn.Module):
+    def __init__(self, channels: int, layer_scale: float = 1e-6) -> None:
+        super().__init__()
+        self.block = nn.Sequential(
+            nn.Conv2d(channels, channels, kernel_size=7, padding=3, groups=channels),
+            nn.LayerNorm(channels, eps=1e-6),
+            nn.Linear(channels, 4 * channels),
+            nn.GELU(),
+            nn.Linear(4 * channels, channels),
+        )
+        self.layer_scale = nn.Parameter(torch.ones(channels, 1, 1) * layer_scale)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        y = self.block[0](x)
+        y = y.permute(0, 2, 3, 1)
+        y = self.block[1](y)
+        y = self.block[2](y)
+        y = self.block[3](y)
+        y = self.block[4](y)
+        y = y.permute(0, 3, 1, 2)
+        return x + self.layer_scale * y
+
+
+class ConvNeXtBackbone(nn.Module):
+    WEIGHTS = {
+        "convnext_small": "https://download.pytorch.org/models/convnext_small-0c510722.pth",
+        "convnext_base": "https://download.pytorch.org/models/convnext_base-6075fbad.pth",
+    }
+    CONFIGS = {
+        "convnext_small": {"depths": [3, 3, 27, 3], "dims": [96, 192, 384, 768]},
+        "convnext_base": {"depths": [3, 3, 27, 3], "dims": [128, 256, 512, 1024]},
+    }
+
+    def __init__(self, variant: str = "convnext_small", pretrained: bool = True) -> None:
+        super().__init__()
+        if variant not in self.CONFIGS:
+            raise ValueError(f"Unsupported ConvNeXt variant: {variant}")
+        config = self.CONFIGS[variant]
+        dims = config["dims"]
+        depths = config["depths"]
+
+        self.stem = nn.Sequential(
+            nn.Conv2d(3, dims[0], kernel_size=4, stride=4),
+            LayerNorm2d(dims[0], eps=1e-6),
+        )
+        self.stage1 = nn.Sequential(*[ConvNeXtBlock(dims[0]) for _ in range(depths[0])])
+        self.down1 = nn.Sequential(LayerNorm2d(dims[0], eps=1e-6), nn.Conv2d(dims[0], dims[1], kernel_size=2, stride=2))
+        self.stage2 = nn.Sequential(*[ConvNeXtBlock(dims[1]) for _ in range(depths[1])])
+        self.down2 = nn.Sequential(LayerNorm2d(dims[1], eps=1e-6), nn.Conv2d(dims[1], dims[2], kernel_size=2, stride=2))
+        self.stage3 = nn.Sequential(*[ConvNeXtBlock(dims[2]) for _ in range(depths[2])])
+        self.down3 = nn.Sequential(LayerNorm2d(dims[2], eps=1e-6), nn.Conv2d(dims[2], dims[3], kernel_size=2, stride=2))
+        self.stage4 = nn.Sequential(*[ConvNeXtBlock(dims[3]) for _ in range(depths[3])])
+
+        if pretrained:
+            state = torch.hub.load_state_dict_from_url(self.WEIGHTS[variant], progress=True, map_location="cpu")
+            self.load_state_dict(self._convert_torchvision_state(state), strict=False)
+
+    def _convert_torchvision_state(self, state: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+        converted: dict[str, torch.Tensor] = {}
+        prefix_map = {
+            "features.0.0.": "stem.0.",
+            "features.0.1.": "stem.1.",
+            "features.2.0.": "down1.0.",
+            "features.2.1.": "down1.1.",
+            "features.4.0.": "down2.0.",
+            "features.4.1.": "down2.1.",
+            "features.6.0.": "down3.0.",
+            "features.6.1.": "down3.1.",
+        }
+        stage_map = {
+            "features.1.": "stage1.",
+            "features.3.": "stage2.",
+            "features.5.": "stage3.",
+            "features.7.": "stage4.",
+        }
+        for key, value in state.items():
+            if key.startswith("classifier."):
+                continue
+            new_key = None
+            for old, new in prefix_map.items():
+                if key.startswith(old):
+                    new_key = new + key[len(old) :]
+                    break
+            if new_key is None:
+                for old, new in stage_map.items():
+                    if key.startswith(old):
+                        new_key = new + key[len(old) :]
+                        break
+            if new_key is None:
+                continue
+            new_key = new_key.replace(".block.2.", ".block.1.")
+            new_key = new_key.replace(".block.3.", ".block.2.")
+            new_key = new_key.replace(".block.5.", ".block.4.")
+            converted[new_key] = value
+        return converted
+
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        x = self.stage1(self.stem(x))
+        p3 = self.stage2(self.down1(x))
+        p4 = self.stage3(self.down2(p3))
+        p5 = self.stage4(self.down3(p4))
+        return p3, p4, p5
+
+
 class RepConv(nn.Module):
     """Train-time multi-branch conv inspired by YOLOv7 planned re-parameterization."""
 
@@ -352,6 +463,9 @@ class TinyDetector(nn.Module):
         if backbone == "resnet50":
             self.resnet = ResNet50Backbone(pretrained=pretrained)
             feature_channels = [512, 1024, 2048]
+        elif backbone in {"convnext_small", "convnext_base"}:
+            self.convnext = ConvNeXtBackbone(variant=backbone, pretrained=pretrained)
+            feature_channels = ConvNeXtBackbone.CONFIGS[backbone]["dims"][1:]
         elif backbone == "eelan":
             c1 = base_channels
             c2 = base_channels * 2
@@ -418,6 +532,8 @@ class TinyDetector(nn.Module):
     def forward(self, x: torch.Tensor) -> dict[str, list[torch.Tensor]]:
         if self.backbone_name == "resnet50":
             p3, p4, p5 = self.resnet(x)
+        elif self.backbone_name.startswith("convnext_"):
+            p3, p4, p5 = self.convnext(x)
         else:
             x = self.stem(x)
             p3 = self.elan3(self.down3(x))

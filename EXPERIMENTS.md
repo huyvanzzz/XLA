@@ -240,3 +240,33 @@ Kết quả:
 - Tổng epoch train:
 - Epoch tốt nhất:
 - Ghi chú:
+
+## v7_convnext_small_pretrained
+
+Ngày:
+
+Mô tả:
+- Kế thừa pipeline nhanh của v6: legacy anchor assignment, head cũ, không task-aligned, không decoupled head.
+- Đổi backbone từ ResNet50 pretrained sang ConvNeXt-Small pretrained ImageNet.
+- ConvNeXt được tự cài trong `models/tiny_detector.py`, chỉ load pretrained weights classification; detector head/loss/NMS vẫn tự cài.
+- Dùng 3 feature scale của ConvNeXt: stride 8/16/32 đưa vào FPN/PAN hiện tại.
+- Vẫn giữ direct resize `512x512`, không letterbox, không mosaic, không TTA.
+- DIoU-NMS vẫn bật trong post-processing.
+
+Config chính:
+- `model.backbone: convnext_small`
+- `model.pretrained: true`
+- `assignment_strategy: legacy`
+- `decoupled_head: false`
+- `nms_type: diou`
+- `batch_size: 24` nếu không OOM; nếu OOM giảm xuống `16`.
+
+Kết quả:
+- mAP@0.5:
+- Precision:
+- Recall:
+- Thời gian train/epoch:
+- Thời gian mAP validation:
+- Tổng epoch train:
+- Epoch tốt nhất:
+- Ghi chú:
