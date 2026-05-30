@@ -457,6 +457,7 @@ def evaluate_map(
     class_pre_nms_topk: int,
     preserve_aspect: bool,
     channels_last: bool,
+    decode_style: str,
 ) -> dict[str, float]:
     model.eval()
     predictions = []
@@ -479,6 +480,7 @@ def evaluate_map(
                 pre_nms_topk=pre_nms_topk,
                 class_pre_nms_topk=class_pre_nms_topk,
                 preserve_aspect=preserve_aspect,
+                decode_style=decode_style,
             )
             predictions.append({"image_id": str(target["image_id"]), "boxes": boxes})
 
@@ -521,6 +523,7 @@ def evaluate_map_with_optional_tuning(
                 class_pre_nms_topk=int(metric_config.get("class_pre_nms_topk", 100)),
                 preserve_aspect=bool(metric_config.get("preserve_aspect", True)),
                 channels_last=bool(metric_config.get("channels_last", False)),
+                decode_style=str(metric_config.get("decode_style", "standard")),
             )
             if best is None or result["map50"] > best["map50"]:
                 best = result
@@ -626,6 +629,10 @@ def main() -> None:
         task_aligned_beta=float(loss_weights.get("task_aligned_beta", 6.0)),
         task_aligned_center_radius=float(loss_weights.get("task_aligned_center_radius", 2.5)),
         task_aligned_min_iou=float(loss_weights.get("task_aligned_min_iou", 0.05)),
+        decode_style=str(loss_weights.get("decode_style", "standard")),
+        target_offsets=bool(loss_weights.get("target_offsets", False)),
+        target_offset_bias=float(loss_weights.get("target_offset_bias", 0.5)),
+        scale_obj_balance=loss_weights.get("scale_obj_balance"),
     ).to(device)
     decay_backbone = []
     decay_detector = []
@@ -805,6 +812,10 @@ def main() -> None:
                 "task_aligned_beta": float(loss_weights.get("task_aligned_beta", 6.0)),
                 "task_aligned_center_radius": float(loss_weights.get("task_aligned_center_radius", 2.5)),
                 "task_aligned_min_iou": float(loss_weights.get("task_aligned_min_iou", 0.05)),
+                "decode_style": str(loss_weights.get("decode_style", "standard")),
+                "target_offsets": bool(loss_weights.get("target_offsets", False)),
+                "target_offset_bias": float(loss_weights.get("target_offset_bias", 0.5)),
+                "scale_obj_balance": loss_weights.get("scale_obj_balance"),
             },
             "lr": args.lr,
             "backbone_lr_mult": args.backbone_lr_mult,
@@ -823,6 +834,7 @@ def main() -> None:
             "nms_type": config["validation_metric"].get("nms_type", config["inference"].get("nms_type", "soft")),
             "pre_nms_topk": config["validation_metric"].get("pre_nms_topk", config["inference"].get("pre_nms_topk", 1000)),
             "class_pre_nms_topk": config["validation_metric"].get("class_pre_nms_topk", config["inference"].get("class_pre_nms_topk", 100)),
+            "decode_style": config["validation_metric"].get("decode_style", config["inference"].get("decode_style", "standard")),
         }
         if ema is not None:
             state["model"] = ema.module.state_dict()

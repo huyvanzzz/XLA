@@ -36,7 +36,7 @@ augmentation:
   random_erasing_max_area: 0.12
 
 model:
-  backbone: convnext_small
+  backbone: resnet50
   pretrained: true
   base_channels: 40
   head_channels: 192
@@ -45,7 +45,7 @@ model:
   objectness_prior: 0.01
   dropout: 0.1
   elan_depth: 1
-  neck_type: convnext_pan
+  neck_type: yolov7_pan
   head_type: standard
   aux_head: true
   aux_head_close_epoch: 30
@@ -72,18 +72,22 @@ balanced_sampling:
   empty_weight: 0.35
 
 loss_weights:
-  box_weight: 8.0
+  box_weight: 0.0
   obj_weight: 1.0
   noobj_weight: 0.25
   cls_weight: 1.0
-  iou_weight: 2.0
+  iou_weight: 6.0
   aux_weight: 0.4
   objectness_focal_gamma: 1.5
   iou_aware_objectness: true
   assignment_strategy: legacy
   positive_anchor_topk: 3
   ignore_anchor_iou: 0.5
-  objectness_iou_mix: 0.25
+  objectness_iou_mix: 1.0
+  decode_style: yolov7
+  target_offsets: true
+  target_offset_bias: 0.5
+  scale_obj_balance: [4.0, 1.0, 0.4]
   task_aligned_alpha: 0.5
   task_aligned_beta: 6.0
   task_aligned_center_radius: 2.5
@@ -100,6 +104,7 @@ inference:
   max_detections: 100
   pre_nms_topk: 300
   class_pre_nms_topk: 100
+  decode_style: yolov7
 
 validation_metric:
   enabled: true
@@ -112,6 +117,7 @@ validation_metric:
   nms_type: diou
   pre_nms_topk: 300
   class_pre_nms_topk: 100
+  decode_style: yolov7
   tune: false
   tune_every: 5
   conf_thresholds: [0.08, 0.1, 0.12, 0.15]

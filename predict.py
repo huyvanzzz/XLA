@@ -30,6 +30,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max_detections", type=int)
     parser.add_argument("--pre_nms_topk", type=int)
     parser.add_argument("--class_pre_nms_topk", type=int)
+    parser.add_argument("--decode_style", choices=["standard", "yolov7"])
     parser.add_argument("--batch_size", type=int, default=16)
     return parser.parse_args()
 
@@ -37,7 +38,7 @@ def parse_args() -> argparse.Namespace:
 def apply_config(args: argparse.Namespace) -> argparse.Namespace:
     config = load_config(args.config)
     inference = config["inference"]
-    for name in ["conf_threshold", "nms_threshold", "nms_type", "max_detections", "pre_nms_topk", "class_pre_nms_topk"]:
+    for name in ["conf_threshold", "nms_threshold", "nms_type", "max_detections", "pre_nms_topk", "class_pre_nms_topk", "decode_style"]:
         if getattr(args, name) is None:
             setattr(args, name, inference[name])
     return args
@@ -47,6 +48,7 @@ def main() -> None:
     args = parse_args()
     cli_conf_threshold = args.conf_threshold
     cli_nms_threshold = args.nms_threshold
+    cli_decode_style = args.decode_style
     args = apply_config(args)
     image_dir = Path(args.image_dir)
     checkpoint_path = Path(args.checkpoint)
@@ -67,6 +69,8 @@ def main() -> None:
         args.conf_threshold = checkpoint.get("best_conf_threshold", args.conf_threshold)
     if cli_nms_threshold is None:
         args.nms_threshold = checkpoint.get("best_nms_threshold", args.nms_threshold)
+    if cli_decode_style is None:
+        args.decode_style = checkpoint.get("decode_style", checkpoint.get("loss_weights", {}).get("decode_style", args.decode_style))
     tta_hflip = bool(config["inference"].get("tta_hflip", False))
 
     model = TinyDetector(num_classes=len(classes), num_anchors=[len(scale) for scale in anchors], **model_config).to(device)
@@ -113,6 +117,7 @@ def main() -> None:
                     pre_nms_topk=args.pre_nms_topk,
                     class_pre_nms_topk=args.class_pre_nms_topk,
                     preserve_aspect=preserve_aspect,
+                    decode_style=args.decode_style,
                 )
                 if pred_flip is not None:
                     flip_boxes = decode_predictions(
@@ -130,6 +135,7 @@ def main() -> None:
                         pre_nms_topk=args.pre_nms_topk,
                         class_pre_nms_topk=args.class_pre_nms_topk,
                         preserve_aspect=preserve_aspect,
+                        decode_style=args.decode_style,
                     )
                     boxes = merge_detections(
                         boxes + flip_detections_horizontally(flip_boxes, orig_w),

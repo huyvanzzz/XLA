@@ -35,6 +35,10 @@ class YoloLoss(nn.Module):
         task_aligned_beta: float = 6.0,
         task_aligned_center_radius: float = 2.5,
         task_aligned_min_iou: float = 0.05,
+        decode_style: str = "standard",
+        target_offsets: bool = False,
+        target_offset_bias: float = 0.5,
+        scale_obj_balance: list[float] | None = None,
     ) -> None:
         super().__init__()
         self.anchors = [[(float(w), float(h)) for w, h in scale] for scale in anchors]
@@ -59,6 +63,10 @@ class YoloLoss(nn.Module):
         self.task_aligned_beta = float(task_aligned_beta)
         self.task_aligned_center_radius = float(task_aligned_center_radius)
         self.task_aligned_min_iou = float(task_aligned_min_iou)
+        self.decode_style = str(decode_style)
+        self.target_offsets = bool(target_offsets)
+        self.target_offset_bias = float(target_offset_bias)
+        self.scale_obj_balance = [float(v) for v in scale_obj_balance] if scale_obj_balance else []
         if class_weights is not None:
             self.register_buffer("class_weights", torch.tensor(class_weights, dtype=torch.float32))
         else:
@@ -150,17 +158,15 @@ class YoloLoss(nn.Module):
                         stride_y = self.image_size / grid_h
                         cell_x = (centers[obj_idx, 0] / stride_x).clamp(0, grid_w - 1e-4)
                         cell_y = (centers[obj_idx, 1] / stride_y).clamp(0, grid_h - 1e-4)
-                        gx = cell_x.floor().long()
-                        gy = cell_y.floor().long()
                         anchor = anchors_by_scale[scale_idx][anchor_idx]
-
-                        obj_targets[scale_idx][batch_idx, gy, gx, anchor_idx] = 1.0
-                        box_targets[scale_idx][batch_idx, gy, gx, anchor_idx, 0] = cell_x - gx.float()
-                        box_targets[scale_idx][batch_idx, gy, gx, anchor_idx, 1] = cell_y - gy.float()
-                        box_targets[scale_idx][batch_idx, gy, gx, anchor_idx, 2] = torch.log(wh[obj_idx, 0] / anchor[0].clamp(min=1e-6))
-                        box_targets[scale_idx][batch_idx, gy, gx, anchor_idx, 3] = torch.log(wh[obj_idx, 1] / anchor[1].clamp(min=1e-6))
-                        xyxy_targets[scale_idx][batch_idx, gy, gx, anchor_idx] = boxes[obj_idx]
-                        cls_targets[scale_idx][batch_idx, gy, gx, anchor_idx] = labels[obj_idx]
+                        for gx, gy in self._target_cells(cell_x, cell_y, grid_w, grid_h):
+                            obj_targets[scale_idx][batch_idx, gy, gx, anchor_idx] = 1.0
+                            box_targets[scale_idx][batch_idx, gy, gx, anchor_idx, 0] = cell_x - gx.float()
+                            box_targets[scale_idx][batch_idx, gy, gx, anchor_idx, 1] = cell_y - gy.float()
+                            box_targets[scale_idx][batch_idx, gy, gx, anchor_idx, 2] = torch.log(wh[obj_idx, 0] / anchor[0].clamp(min=1e-6))
+                            box_targets[scale_idx][batch_idx, gy, gx, anchor_idx, 3] = torch.log(wh[obj_idx, 1] / anchor[1].clamp(min=1e-6))
+                            xyxy_targets[scale_idx][batch_idx, gy, gx, anchor_idx] = boxes[obj_idx]
+                            cls_targets[scale_idx][batch_idx, gy, gx, anchor_idx] = labels[obj_idx]
                     for flat_anchor_idx_t in ignored_flat_anchors:
                         flat_anchor_idx = int(flat_anchor_idx_t.item())
                         scale_idx = max(i for i, start in enumerate(scale_offsets) if flat_anchor_idx >= start)
@@ -190,10 +196,15 @@ class YoloLoss(nn.Module):
             num_pos = pos_mask.sum().clamp(min=1).float()
             total_pos += pos_mask.sum().float()
 
-            pred_xy = pred[..., 0:2].sigmoid()
-            pred_wh = pred[..., 2:4]
+            if self.decode_style == "yolov7":
+                pred_xy = pred[..., 0:2].sigmoid() * 2.0 - 0.5
+                pred_wh = ((pred[..., 2:4].sigmoid() * 2.0).clamp(min=1e-6).pow(2)).log()
+            else:
+                pred_xy = pred[..., 0:2].sigmoid()
+                pred_wh = pred[..., 2:4]
             pred_obj_logit = pred[..., 4]
             pred_cls_logit = pred[..., 5:]
+            balance = self.scale_obj_balance[scale_idx] if scale_idx < len(self.scale_obj_balance) else 1.0
 
             if pos_mask.any():
                 box_loss = box_loss + F.smooth_l1_loss(
@@ -223,12 +234,12 @@ class YoloLoss(nn.Module):
                     label_smoothing=self.label_smoothing,
                 ) / num_pos
 
-            obj_loss = obj_loss + self._objectness_loss(
+            obj_loss = obj_loss + balance * self._objectness_loss(
                 pred_obj_logit[pos_mask],
                 obj_target[pos_mask],
                 normalizer=num_pos,
             )
-            noobj_loss = noobj_loss + self._objectness_loss(
+            noobj_loss = noobj_loss + balance * self._objectness_loss(
                 pred_obj_logit[neg_mask],
                 obj_target[neg_mask],
                 normalizer=neg_mask.sum().clamp(min=1).float(),
@@ -259,6 +270,32 @@ class YoloLoss(nn.Module):
             "num_pos": float(total_pos.detach().cpu()),
         }
         return total, logs
+
+    def _target_cells(
+        self,
+        cell_x: torch.Tensor,
+        cell_y: torch.Tensor,
+        grid_w: int,
+        grid_h: int,
+    ) -> list[tuple[torch.Tensor, torch.Tensor]]:
+        gx0 = cell_x.floor().long()
+        gy0 = cell_y.floor().long()
+        if not self.target_offsets:
+            return [(gx0, gy0)]
+
+        cells = [(gx0, gy0)]
+        frac_x = cell_x - gx0.float()
+        frac_y = cell_y - gy0.float()
+        bias = self.target_offset_bias
+        if frac_x < bias and gx0 > 0:
+            cells.append((gx0 - 1, gy0))
+        if frac_y < bias and gy0 > 0:
+            cells.append((gx0, gy0 - 1))
+        if frac_x > 1.0 - bias and gx0 < grid_w - 1:
+            cells.append((gx0 + 1, gy0))
+        if frac_y > 1.0 - bias and gy0 < grid_h - 1:
+            cells.append((gx0, gy0 + 1))
+        return cells
 
     @torch.no_grad()
     def _assign_task_aligned(
@@ -446,6 +483,14 @@ class YoloLoss(nn.Module):
         yy = yy[None, :, :, None].float()
         cx = (pred[..., 0].sigmoid() + xx) * stride_x
         cy = (pred[..., 1].sigmoid() + yy) * stride_y
-        bw = pred[..., 2].clamp(min=-6, max=6).exp() * anchors[:, 0]
-        bh = pred[..., 3].clamp(min=-6, max=6).exp() * anchors[:, 1]
+        if self.decode_style == "yolov7":
+            cx = (pred[..., 0].sigmoid() * 2.0 - 0.5 + xx) * stride_x
+            cy = (pred[..., 1].sigmoid() * 2.0 - 0.5 + yy) * stride_y
+            bw = (pred[..., 2].sigmoid() * 2.0).pow(2) * anchors[:, 0]
+            bh = (pred[..., 3].sigmoid() * 2.0).pow(2) * anchors[:, 1]
+        else:
+            cx = (pred[..., 0].sigmoid() + xx) * stride_x
+            cy = (pred[..., 1].sigmoid() + yy) * stride_y
+            bw = pred[..., 2].clamp(min=-6, max=6).exp() * anchors[:, 0]
+            bh = pred[..., 3].clamp(min=-6, max=6).exp() * anchors[:, 1]
         return torch.stack([cx - bw * 0.5, cy - bh * 0.5, cx + bw * 0.5, cy + bh * 0.5], dim=-1)

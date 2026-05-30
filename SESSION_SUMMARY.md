@@ -48,12 +48,12 @@ Diem quan trong:
 - `validation_metric.nms_type: diou`
 
 Model hien tai:
-- `backbone: convnext_small`
+- `backbone: resnet50`
 - `pretrained: true`
 - `neck_channels: 192`
 - `head_channels: 192`
 - `attention_heads: 0`
-- `neck_type: convnext_pan`
+- `neck_type: yolov7_pan`
 - `head_type: standard`
 - `elan_depth: 1`
 - `aux_head: true`
@@ -69,7 +69,10 @@ Loss/assignment hien tai da reset ve v3:
 - `task_aligned_center_radius: 2.5`
 - `task_aligned_min_iou: 0.05`
 - `iou_aware_objectness: true`
-- `objectness_iou_mix: 0.25`
+- `objectness_iou_mix: 1.0`
+- `decode_style: yolov7`
+- `target_offsets: true`
+- `scale_obj_balance: [4.0, 1.0, 0.4]`
 - `noobj_hard_negative_ratio: 0.0`
 
 ## Version da ghi
@@ -80,7 +83,7 @@ Xem chi tiet trong `EXPERIMENTS.md`.
 - v2/v3: direct resize 512, train nhanh hon; user bao v3 len khoang `0.615`, train/epoch khoang `4'30`, best gan epoch 60.
 - v4: hard-negative + mosaic + TTA, ket qua rat te; da reset/tat.
 - v5: Task-Aligned Assignment + Decoupled Detection Head + tat aux head tu epoch 30. Bi reset vi train lau va khong on.
-- Hien tai active: v9 dung ConvNeXt-Small pretrained tu cai lam backbone, kem ConvNeXt-PAN lite. Khong dung task-aligned, khong dung decoupled head. Cai tien nhe la tat aux head tu epoch 30 va dung DIoU-NMS trong post-processing.
+- Hien tai active: v11 dung ResNet50 pretrained backbone voi YOLOv7-style PAN neck va YOLOv7-style decode/loss tu cai. Khong dung OTA, khong task-aligned, khong decoupled head. Cai tien nhe la tat aux head tu epoch 30 va dung DIoU-NMS trong post-processing.
 
 ## Ly do reset ve v3
 
@@ -97,6 +100,18 @@ V9 la ban nhe hon vi v8 train cham:
 - giu `ConvNeXtPANNeck` nhung `elan_depth: 1`;
 - doi `head_type: standard` de bot LayerNorm/depthwise trong main+aux head;
 - muc tieu giu loi ich fusion hop ConvNeXt nhung train gan v7 hon.
+
+V10 reset lai ResNet50 theo yeu cau va doc YOLOv7 repo:
+- active config: `backbone: resnet50`, `neck_type: yolov7_pan`;
+- neck moi co SPPCSPC o P5, ELAN-style fusion, va downsample hai nhanh maxpool + conv stride2;
+- khong copy YOLOv7 Detect/IDetect, loss hay pipeline hoan chinh; chi lay logic kien truc va tu cai lai block phu hop code hien tai.
+
+V11 them loss/decode theo YOLOv7:
+- bbox decode `sigmoid*2-0.5` va `(sigmoid*2)^2*anchor` trong loss + predict;
+- target offsets sang cell lan can khi tam box gan bien cell;
+- objectness IoU target mix = 1.0;
+- objectness balance theo scale `[4.0, 1.0, 0.4]`;
+- `box_weight: 0.0`, dung CIoU la bbox loss chinh.
 
 Neu tiep tuc cai tien, uu tien cac huong khong tang thoi gian train:
 - post-processing / per-class threshold sau train;
@@ -124,7 +139,7 @@ Neu tiep tuc cai tien, uu tien cac huong khong tang thoi gian train:
 
 Thu tu nen lam:
 
-1. Train/evaluate active v3-reset truoc, ghi mAP/precision/recall/time vao `EXPERIMENTS.md`.
+1. Train/evaluate active v11 truoc, ghi mAP/precision/recall/time vao `EXPERIMENTS.md`.
 2. Neu can cai tien ma khong tang train time: lam post-hoc threshold/NMS per class sau train, hoac sua predict/evaluate pipeline.
 3. Neu can sua model/loss: chi them cai co chi phi gan nhu bang 0; khong quay lai task-aligned/decoupled neu user khong chap nhan train cham.
 4. Neu precision van qua thap: xem per-class predictions, dac biet `chair`; can nhac post-hoc class threshold tuning ngoai train, khong bat grid trong train.

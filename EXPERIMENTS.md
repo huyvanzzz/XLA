@@ -332,3 +332,68 @@ Kết quả:
 - Tổng epoch train:
 - Epoch tốt nhất:
 - Ghi chú:
+
+## v10_resnet50_yolov7_pan
+
+Ngày:
+
+Mô tả:
+- Reset active backbone về `resnet50` pretrained theo yêu cầu.
+- Đọc YOLOv7 repo và thiết kế lại neck theo logic chính, không copy detector hoàn chỉnh.
+- Thêm `SPPCSPCBlock` ở feature sâu P5.
+- Thêm `YoloV7ELANFusion` cho các bước concat/fusion trong FPN/PAN.
+- Thêm `YoloV7Downsample` hai nhánh: maxpool route + stride-2 conv route.
+- Giữ head YOLO-style tự cài hiện tại với RepConv, không dùng YOLOv7 Detect/IDetect.
+- Giữ loss, assignment, NMS, predict pipeline tự cài.
+- Không dùng task-aligned, không decoupled head, không mosaic/TTA.
+
+Config chính:
+- `model.backbone: resnet50`
+- `model.neck_type: yolov7_pan`
+- `model.head_type: standard`
+- `model.pretrained: true`
+- `assignment_strategy: legacy`
+- `nms_type: diou`
+
+Kết quả:
+- mAP@0.5:
+- Precision:
+- Recall:
+- Thời gian train/epoch:
+- Thời gian mAP validation:
+- Tổng epoch train:
+- Epoch tốt nhất:
+- Ghi chú:
+
+## v11_resnet50_yolov7_loss_decode
+
+Ngày:
+
+Mô tả:
+- Kế thừa v10 ResNet50 + YOLOv7-style PAN neck.
+- Chỉnh loss/decode theo các ý tưởng chính của YOLOv7, nhưng vẫn tự cài trong `utils/loss.py` và `utils/inference.py`.
+- Decode bbox dùng công thức YOLOv7: center `sigmoid * 2 - 0.5`, width/height `(sigmoid * 2)^2 * anchor`.
+- Assignment legacy thêm positive ở các cell lân cận khi tâm object gần biên cell, giống offset target của YOLOv7.
+- Objectness target dùng IoU ratio mạnh hơn: `objectness_iou_mix: 1.0`.
+- Objectness balance theo scale `[4.0, 1.0, 0.4]` để ưu tiên P3/small-object như YOLOv7.
+- Bỏ SmoothL1 bbox khỏi tổng loss (`box_weight: 0.0`), dựa chính vào CIoU loss.
+- Không dùng OTA vì nặng và phụ thuộc YOLOv7 Detect head; vẫn giữ assignment tự cài nhẹ hơn.
+
+Config chính:
+- `box_weight: 0.0`
+- `iou_weight: 6.0`
+- `decode_style: yolov7`
+- `target_offsets: true`
+- `target_offset_bias: 0.5`
+- `scale_obj_balance: [4.0, 1.0, 0.4]`
+- `objectness_iou_mix: 1.0`
+
+Kết quả:
+- mAP@0.5:
+- Precision:
+- Recall:
+- Thời gian train/epoch:
+- Thời gian mAP validation:
+- Tổng epoch train:
+- Epoch tốt nhất:
+- Ghi chú:

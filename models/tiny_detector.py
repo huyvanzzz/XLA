@@ -184,6 +184,103 @@ class SPPBlock(nn.Module):
         return self.fuse(torch.cat([x, self.pool5(x), self.pool9(x), self.pool13(x)], dim=1))
 
 
+class SPPCSPCBlock(nn.Module):
+    """CSP-style SPP block inspired by YOLOv7, implemented locally for the detector neck."""
+
+    def __init__(self, in_channels: int, out_channels: int) -> None:
+        super().__init__()
+        hidden = out_channels
+        self.cv1 = ConvBNAct(in_channels, hidden, kernel_size=1)
+        self.cv2 = ConvBNAct(in_channels, hidden, kernel_size=1)
+        self.cv3 = ConvBNAct(hidden, hidden, kernel_size=3)
+        self.cv4 = ConvBNAct(hidden, hidden, kernel_size=1)
+        self.pool5 = nn.MaxPool2d(kernel_size=5, stride=1, padding=2)
+        self.pool9 = nn.MaxPool2d(kernel_size=9, stride=1, padding=4)
+        self.pool13 = nn.MaxPool2d(kernel_size=13, stride=1, padding=6)
+        self.cv5 = ConvBNAct(hidden * 4, hidden, kernel_size=1)
+        self.cv6 = ConvBNAct(hidden, hidden, kernel_size=3)
+        self.cv7 = ConvBNAct(hidden * 2, out_channels, kernel_size=1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x1 = self.cv4(self.cv3(self.cv1(x)))
+        y1 = self.cv6(self.cv5(torch.cat([x1, self.pool5(x1), self.pool9(x1), self.pool13(x1)], dim=1)))
+        y2 = self.cv2(x)
+        return self.cv7(torch.cat([y1, y2], dim=1))
+
+
+class YoloV7ELANFusion(nn.Module):
+    """ELAN-style multi-branch fusion used in YOLOv7 heads, scaled for this small detector."""
+
+    def __init__(self, in_channels: int, out_channels: int) -> None:
+        super().__init__()
+        hidden = max(out_channels // 2, 32)
+        self.short = ConvBNAct(in_channels, hidden, kernel_size=1)
+        self.long = ConvBNAct(in_channels, hidden, kernel_size=1)
+        self.blocks = nn.ModuleList([ConvBNAct(hidden, hidden, kernel_size=3) for _ in range(4)])
+        self.fuse = ConvBNAct(hidden * 6, out_channels, kernel_size=1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        outputs = [self.short(x)]
+        y = self.long(x)
+        outputs.append(y)
+        for block in self.blocks:
+            y = block(y)
+            outputs.append(y)
+        return self.fuse(torch.cat(outputs, dim=1))
+
+
+class YoloV7Downsample(nn.Module):
+    """Two-branch downsample: maxpool route plus stride-2 conv route."""
+
+    def __init__(self, channels: int) -> None:
+        super().__init__()
+        half = max(channels // 2, 32)
+        self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
+        self.pool_proj = ConvBNAct(channels, half, kernel_size=1)
+        self.conv_proj = ConvBNAct(channels, half, kernel_size=1)
+        self.conv_down = ConvBNAct(half, half, kernel_size=3, stride=2)
+        self.out = ConvBNAct(half * 2, channels, kernel_size=1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        pooled = self.pool_proj(self.pool(x))
+        conved = self.conv_down(self.conv_proj(x))
+        return self.out(torch.cat([conved, pooled], dim=1))
+
+
+class YoloV7PANNeck(nn.Module):
+    """YOLOv7-style SPPCSPC + ELAN FPN/PAN neck adapted to pretrained backbones."""
+
+    def __init__(self, in_channels: list[int], out_channels: int = 192) -> None:
+        super().__init__()
+        self.lateral3 = ConvBNAct(in_channels[0], out_channels, kernel_size=1)
+        self.lateral4 = ConvBNAct(in_channels[1], out_channels, kernel_size=1)
+        self.lateral5 = ConvBNAct(in_channels[2], out_channels, kernel_size=1)
+        self.spp = SPPCSPCBlock(out_channels, out_channels)
+        self.fuse4 = YoloV7ELANFusion(out_channels * 2, out_channels)
+        self.fuse3 = YoloV7ELANFusion(out_channels * 2, out_channels)
+        self.down3 = YoloV7Downsample(out_channels)
+        self.pan4 = YoloV7ELANFusion(out_channels * 2, out_channels)
+        self.down4 = YoloV7Downsample(out_channels)
+        self.pan5 = YoloV7ELANFusion(out_channels * 2, out_channels)
+
+    def forward(self, features: tuple[torch.Tensor, torch.Tensor, torch.Tensor]) -> list[torch.Tensor]:
+        p3, p4, p5 = features
+        p3 = self.lateral3(p3)
+        p4 = self.lateral4(p4)
+        p5 = self.spp(self.lateral5(p5))
+
+        p5_up = torch.nn.functional.interpolate(p5, size=p4.shape[-2:], mode="nearest")
+        p4_td = self.fuse4(torch.cat([p4, p5_up], dim=1))
+        p4_up = torch.nn.functional.interpolate(p4_td, size=p3.shape[-2:], mode="nearest")
+        p3_out = self.fuse3(torch.cat([p3, p4_up], dim=1))
+
+        p3_down = self.down3(p3_out)
+        p4_out = self.pan4(torch.cat([p4_td, p3_down], dim=1))
+        p4_down = self.down4(p4_out)
+        p5_out = self.pan5(torch.cat([p5, p4_down], dim=1))
+        return [p3_out, p4_out, p5_out]
+
+
 class LargeKernelBlock(nn.Module):
     """Depthwise large-kernel context block for deeper detector features."""
 
@@ -614,7 +711,9 @@ class TinyDetector(nn.Module):
         else:
             raise ValueError(f"Unsupported backbone: {backbone}")
         self.backbone_name = backbone
-        if neck_type == "convnext_pan":
+        if neck_type == "yolov7_pan":
+            self.neck = YoloV7PANNeck(feature_channels, out_channels=neck_channels)
+        elif neck_type == "convnext_pan":
             self.neck = ConvNeXtPANNeck(feature_channels, out_channels=neck_channels, depth=max(1, elan_depth))
         else:
             self.neck = FPNPANNeck(feature_channels, out_channels=neck_channels, attention_heads=attention_heads)

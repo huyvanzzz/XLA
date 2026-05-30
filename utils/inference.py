@@ -51,6 +51,7 @@ def decode_predictions(
     pre_nms_topk: int = 1000,
     class_pre_nms_topk: int = 100,
     preserve_aspect: bool = True,
+    decode_style: str = "standard",
 ) -> list[dict[str, object]]:
     if isinstance(pred, dict):
         preds = pred["main"]
@@ -76,6 +77,7 @@ def decode_predictions(
             orig_width,
             orig_height,
             preserve_aspect=preserve_aspect,
+            decode_style=decode_style,
         )
         all_boxes.append(boxes)
         all_scores.append(scores)
@@ -197,6 +199,7 @@ def _decode_scale(
     orig_width: int,
     orig_height: int,
     preserve_aspect: bool = True,
+    decode_style: str = "standard",
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     device = pred.device
     grid_h, grid_w, num_anchors, _ = pred.shape
@@ -212,10 +215,16 @@ def _decode_scale(
     xx = xx[..., None].float()
     yy = yy[..., None].float()
 
-    center_x = (pred[..., 0].sigmoid() + xx) * stride_x
-    center_y = (pred[..., 1].sigmoid() + yy) * stride_y
-    box_w = pred[..., 2].clamp(min=-6, max=6).exp() * anchor_t[:, 0]
-    box_h = pred[..., 3].clamp(min=-6, max=6).exp() * anchor_t[:, 1]
+    if decode_style == "yolov7":
+        center_x = (pred[..., 0].sigmoid() * 2.0 - 0.5 + xx) * stride_x
+        center_y = (pred[..., 1].sigmoid() * 2.0 - 0.5 + yy) * stride_y
+        box_w = (pred[..., 2].sigmoid() * 2.0).pow(2) * anchor_t[:, 0]
+        box_h = (pred[..., 3].sigmoid() * 2.0).pow(2) * anchor_t[:, 1]
+    else:
+        center_x = (pred[..., 0].sigmoid() + xx) * stride_x
+        center_y = (pred[..., 1].sigmoid() + yy) * stride_y
+        box_w = pred[..., 2].clamp(min=-6, max=6).exp() * anchor_t[:, 0]
+        box_h = pred[..., 3].clamp(min=-6, max=6).exp() * anchor_t[:, 1]
 
     boxes = torch.stack(
         [
