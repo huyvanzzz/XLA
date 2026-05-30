@@ -270,3 +270,35 @@ Kết quả:
 - Tổng epoch train:
 - Epoch tốt nhất:
 - Ghi chú:
+
+## v8_convnext_aligned_neck_head
+
+Ngày:
+
+Mô tả:
+- Kế thừa v7: ConvNeXt-Small pretrained backbone tự cài, direct resize `512x512`, legacy anchor assignment.
+- Thiết kế lại neck/head để hợp ConvNeXt hơn thay vì dùng neck/head kiểu ResNet/YOLO cũ.
+- Neck mới `ConvNeXtPANNeck`: vẫn giữ FPN/PAN multi-scale, nhưng fusion dùng `LayerNorm2d + depthwise 7x7 + GELU + pointwise`.
+- Downsample trong PAN tách channel projection và spatial downsample, theo tinh thần spatial-channel decoupled downsampling của YOLOv10.
+- Head mới `ConvNeXtDetectionHead`: dùng projection + ConvNeXt-style depthwise block, giữ nguyên output layout `[x, y, w, h, obj, class...]`.
+- Không dùng task-aligned assignment, không dùng decoupled head nặng, không dùng TTA/mosaic.
+- Mục tiêu: feature fusion hợp phân phối ConvNeXt hơn, giảm lệch giữa pretrained backbone và detector neck/head.
+
+Config chính:
+- `model.backbone: convnext_small`
+- `model.neck_type: convnext_pan`
+- `model.head_type: convnext`
+- `model.pretrained: true`
+- `assignment_strategy: legacy`
+- `decoupled_head: false`
+- `nms_type: diou`
+
+Kết quả:
+- mAP@0.5:
+- Precision:
+- Recall:
+- Thời gian train/epoch:
+- Thời gian mAP validation:
+- Tổng epoch train:
+- Epoch tốt nhất:
+- Ghi chú:

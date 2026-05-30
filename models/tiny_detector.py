@@ -203,6 +203,101 @@ class LargeKernelBlock(nn.Module):
         return self.act(x + self.block(x))
 
 
+class ConvNeXtFusionBlock(nn.Module):
+    """ConvNeXt-style feature fusion block for normalized pretrained ConvNeXt features."""
+
+    def __init__(self, channels: int, expansion: int = 2, layer_scale: float = 1e-6) -> None:
+        super().__init__()
+        hidden = channels * expansion
+        self.depthwise = nn.Conv2d(channels, channels, kernel_size=7, padding=3, groups=channels)
+        self.norm = LayerNorm2d(channels, eps=1e-6)
+        self.pw1 = nn.Conv2d(channels, hidden, kernel_size=1)
+        self.act = nn.GELU()
+        self.pw2 = nn.Conv2d(hidden, channels, kernel_size=1)
+        self.layer_scale = nn.Parameter(torch.ones(channels, 1, 1) * layer_scale)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        y = self.depthwise(x)
+        y = self.norm(y)
+        y = self.pw2(self.act(self.pw1(y)))
+        return x + self.layer_scale * y
+
+
+class ConvNeXtProject(nn.Module):
+    def __init__(self, in_channels: int, out_channels: int) -> None:
+        super().__init__()
+        self.block = nn.Sequential(
+            LayerNorm2d(in_channels, eps=1e-6),
+            nn.Conv2d(in_channels, out_channels, kernel_size=1),
+            nn.GELU(),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.block(x)
+
+
+class ConvNeXtDownsample(nn.Module):
+    """Decouple channel projection and spatial downsampling to keep PAN efficient."""
+
+    def __init__(self, channels: int) -> None:
+        super().__init__()
+        self.block = nn.Sequential(
+            LayerNorm2d(channels, eps=1e-6),
+            nn.Conv2d(channels, channels, kernel_size=1),
+            nn.GELU(),
+            nn.Conv2d(channels, channels, kernel_size=3, stride=2, padding=1, groups=channels),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.block(x)
+
+
+class ConvNeXtPANNeck(nn.Module):
+    """FPN/PAN neck using ConvNeXt-style normalization and depthwise large-kernel fusion."""
+
+    def __init__(self, in_channels: list[int], out_channels: int = 192, depth: int = 2) -> None:
+        super().__init__()
+        self.lateral3 = ConvNeXtProject(in_channels[0], out_channels)
+        self.lateral4 = ConvNeXtProject(in_channels[1], out_channels)
+        self.lateral5 = ConvNeXtProject(in_channels[2], out_channels)
+        self.deep_context = nn.Sequential(*[ConvNeXtFusionBlock(out_channels) for _ in range(max(1, depth))])
+        self.fuse4 = nn.Sequential(
+            ConvNeXtProject(out_channels * 2, out_channels),
+            *[ConvNeXtFusionBlock(out_channels) for _ in range(max(1, depth))],
+        )
+        self.fuse3 = nn.Sequential(
+            ConvNeXtProject(out_channels * 2, out_channels),
+            *[ConvNeXtFusionBlock(out_channels) for _ in range(max(1, depth))],
+        )
+        self.down3 = ConvNeXtDownsample(out_channels)
+        self.pan4 = nn.Sequential(
+            ConvNeXtProject(out_channels * 2, out_channels),
+            *[ConvNeXtFusionBlock(out_channels) for _ in range(max(1, depth))],
+        )
+        self.down4 = ConvNeXtDownsample(out_channels)
+        self.pan5 = nn.Sequential(
+            ConvNeXtProject(out_channels * 2, out_channels),
+            *[ConvNeXtFusionBlock(out_channels) for _ in range(max(1, depth))],
+        )
+
+    def forward(self, features: tuple[torch.Tensor, torch.Tensor, torch.Tensor]) -> list[torch.Tensor]:
+        p3, p4, p5 = features
+        p3 = self.lateral3(p3)
+        p4 = self.lateral4(p4)
+        p5 = self.deep_context(self.lateral5(p5))
+
+        p5_up = torch.nn.functional.interpolate(p5, size=p4.shape[-2:], mode="nearest")
+        p4_td = self.fuse4(torch.cat([p4, p5_up], dim=1))
+        p4_up = torch.nn.functional.interpolate(p4_td, size=p3.shape[-2:], mode="nearest")
+        p3_out = self.fuse3(torch.cat([p3, p4_up], dim=1))
+
+        p3_down = self.down3(p3_out)
+        p4_out = self.pan4(torch.cat([p4_td, p3_down], dim=1))
+        p4_down = self.down4(p4_out)
+        p5_out = self.pan5(torch.cat([p5, p4_down], dim=1))
+        return [p3_out, p4_out, p5_out]
+
+
 class PartialSelfAttention(nn.Module):
     """Apply self-attention to a channel subset, following the PSA idea used in recent YOLOs."""
 
@@ -379,6 +474,36 @@ class DetectionHead(nn.Module):
             bias[:, 4].fill_(math.log(prior / (1.0 - prior)))
 
 
+class ConvNeXtDetectionHead(nn.Module):
+    """Depthwise ConvNeXt-style prediction head with the same YOLO output layout."""
+
+    def __init__(self, in_channels: int, head_channels: int, num_anchors: int, pred_dim: int, dropout: float) -> None:
+        super().__init__()
+        self.head = nn.Sequential(
+            ConvNeXtProject(in_channels, head_channels),
+            ConvNeXtFusionBlock(head_channels),
+            nn.Dropout2d(dropout) if dropout > 0 else nn.Identity(),
+            nn.Conv2d(head_channels, num_anchors * pred_dim, kernel_size=1),
+        )
+        self.num_anchors = num_anchors
+        self.pred_dim = pred_dim
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        y = self.head(x)
+        n, _, h, w = y.shape
+        y = y.view(n, self.num_anchors, self.pred_dim, h, w)
+        return y.permute(0, 3, 4, 1, 2).contiguous()
+
+    def initialize_biases(self, objectness_prior: float = 0.01) -> None:
+        final_conv = self.head[-1]
+        if not isinstance(final_conv, nn.Conv2d) or final_conv.bias is None:
+            return
+        prior = min(max(float(objectness_prior), 1e-4), 1.0 - 1e-4)
+        bias = final_conv.bias.view(self.num_anchors, self.pred_dim)
+        with torch.no_grad():
+            bias[:, 4].fill_(math.log(prior / (1.0 - prior)))
+
+
 class DecoupledDetectionHead(nn.Module):
     """Separate regression/objectness and classification towers for task-specific features."""
 
@@ -448,6 +573,8 @@ class TinyDetector(nn.Module):
         aux_head: bool = True,
         decoupled_head: bool = False,
         cls_head_channels: int | None = None,
+        neck_type: str = "fpnpan",
+        head_type: str = "standard",
         backbone: str = "resnet50",
         pretrained: bool = True,
         **_: object,
@@ -487,10 +614,18 @@ class TinyDetector(nn.Module):
         else:
             raise ValueError(f"Unsupported backbone: {backbone}")
         self.backbone_name = backbone
-        self.neck = FPNPANNeck(feature_channels, out_channels=neck_channels, attention_heads=attention_heads)
+        if neck_type == "convnext_pan":
+            self.neck = ConvNeXtPANNeck(feature_channels, out_channels=neck_channels, depth=max(1, elan_depth))
+        else:
+            self.neck = FPNPANNeck(feature_channels, out_channels=neck_channels, attention_heads=attention_heads)
         feature_channels = [neck_channels, neck_channels, neck_channels]
         cls_channels = int(cls_head_channels or max(head_channels // 2, 64))
-        head_cls = DecoupledDetectionHead if decoupled_head else DetectionHead
+        if decoupled_head:
+            head_cls = DecoupledDetectionHead
+        elif head_type == "convnext":
+            head_cls = ConvNeXtDetectionHead
+        else:
+            head_cls = DetectionHead
 
         if decoupled_head:
             self.main_heads = nn.ModuleList(

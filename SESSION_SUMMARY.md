@@ -53,6 +53,8 @@ Model hien tai:
 - `neck_channels: 192`
 - `head_channels: 192`
 - `attention_heads: 0`
+- `neck_type: convnext_pan`
+- `head_type: convnext`
 - `aux_head: true`
 - `aux_head_close_epoch: 30`
 - `decoupled_head: false`
@@ -77,13 +79,18 @@ Xem chi tiet trong `EXPERIMENTS.md`.
 - v2/v3: direct resize 512, train nhanh hon; user bao v3 len khoang `0.615`, train/epoch khoang `4'30`, best gan epoch 60.
 - v4: hard-negative + mosaic + TTA, ket qua rat te; da reset/tat.
 - v5: Task-Aligned Assignment + Decoupled Detection Head + tat aux head tu epoch 30. Bi reset vi train lau va khong on.
-- Hien tai active: v7 dung ConvNeXt-Small pretrained tu cai lam backbone. Khong dung task-aligned, khong dung decoupled head. Cai tien nhe la tat aux head tu epoch 30 va dung DIoU-NMS trong post-processing.
+- Hien tai active: v8 dung ConvNeXt-Small pretrained tu cai lam backbone, kem ConvNeXt-style PAN neck/head. Khong dung task-aligned, khong dung decoupled head. Cai tien nhe la tat aux head tu epoch 30 va dung DIoU-NMS trong post-processing.
 
 ## Ly do reset ve v3
 
 V5 lam train cham do task-aligned phai decode nhieu candidate va tinh IoU de assign positive; decoupled head cung them compute. Vi ket qua khong on, active config da reset ve v3 de giu toc do train.
 
 Sau do da them v7: thay ResNet50 pretrained bang ConvNeXt-Small pretrained. ConvNeXt-Small manh hon Tiny va ResNet50 ve feature, nhung co the ton VRAM/thoi gian hon. Neu Kaggle OOM, giam `batch_size` tu 24 xuong 16.
+
+V8 sua tiep kien truc cho hop ConvNeXt:
+- `ConvNeXtPANNeck`: FPN/PAN nhung fusion bang LayerNorm2d + depthwise 7x7 + GELU + pointwise.
+- `ConvNeXtDetectionHead`: head depthwise ConvNeXt-style, output format giu nguyen.
+- Ly do: paper YOLOv10/YOLOv12 nhan manh depthwise/lightweight/large-kernel va feature fusion hieu qua; ConvNeXt backbone cung dung LN/GELU/depthwise large-kernel nen neck/head nen cung he.
 
 Neu tiep tuc cai tien, uu tien cac huong khong tang thoi gian train:
 - post-processing / per-class threshold sau train;

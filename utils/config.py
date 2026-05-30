@@ -49,6 +49,8 @@ DEFAULT_CONFIG = {
         "objectness_prior": 0.01,
         "dropout": 0.1,
         "elan_depth": 2,
+        "neck_type": "convnext_pan",
+        "head_type": "convnext",
         "aux_head": True,
         "aux_head_close_epoch": 30,
         "decoupled_head": False,
