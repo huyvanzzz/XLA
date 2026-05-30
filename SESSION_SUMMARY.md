@@ -54,7 +54,8 @@ Model hien tai:
 - `head_channels: 192`
 - `attention_heads: 0`
 - `neck_type: convnext_pan`
-- `head_type: convnext`
+- `head_type: standard`
+- `elan_depth: 1`
 - `aux_head: true`
 - `aux_head_close_epoch: 30`
 - `decoupled_head: false`
@@ -79,7 +80,7 @@ Xem chi tiet trong `EXPERIMENTS.md`.
 - v2/v3: direct resize 512, train nhanh hon; user bao v3 len khoang `0.615`, train/epoch khoang `4'30`, best gan epoch 60.
 - v4: hard-negative + mosaic + TTA, ket qua rat te; da reset/tat.
 - v5: Task-Aligned Assignment + Decoupled Detection Head + tat aux head tu epoch 30. Bi reset vi train lau va khong on.
-- Hien tai active: v8 dung ConvNeXt-Small pretrained tu cai lam backbone, kem ConvNeXt-style PAN neck/head. Khong dung task-aligned, khong dung decoupled head. Cai tien nhe la tat aux head tu epoch 30 va dung DIoU-NMS trong post-processing.
+- Hien tai active: v9 dung ConvNeXt-Small pretrained tu cai lam backbone, kem ConvNeXt-PAN lite. Khong dung task-aligned, khong dung decoupled head. Cai tien nhe la tat aux head tu epoch 30 va dung DIoU-NMS trong post-processing.
 
 ## Ly do reset ve v3
 
@@ -91,6 +92,11 @@ V8 sua tiep kien truc cho hop ConvNeXt:
 - `ConvNeXtPANNeck`: FPN/PAN nhung fusion bang LayerNorm2d + depthwise 7x7 + GELU + pointwise.
 - `ConvNeXtDetectionHead`: head depthwise ConvNeXt-style, output format giu nguyen.
 - Ly do: paper YOLOv10/YOLOv12 nhan manh depthwise/lightweight/large-kernel va feature fusion hieu qua; ConvNeXt backbone cung dung LN/GELU/depthwise large-kernel nen neck/head nen cung he.
+
+V9 la ban nhe hon vi v8 train cham:
+- giu `ConvNeXtPANNeck` nhung `elan_depth: 1`;
+- doi `head_type: standard` de bot LayerNorm/depthwise trong main+aux head;
+- muc tieu giu loi ich fusion hop ConvNeXt nhung train gan v7 hon.
 
 Neu tiep tuc cai tien, uu tien cac huong khong tang thoi gian train:
 - post-processing / per-class threshold sau train;

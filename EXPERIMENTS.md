@@ -302,3 +302,33 @@ Kết quả:
 - Tổng epoch train:
 - Epoch tốt nhất:
 - Ghi chú:
+
+## v9_convnext_pan_lite
+
+Ngày:
+
+Mô tả:
+- Kế thừa v8 nhưng giảm phần làm train chậm.
+- Giữ ConvNeXt-Small pretrained backbone.
+- Giữ `ConvNeXtPANNeck`, nhưng giảm fusion depth từ 2 xuống 1 qua `elan_depth: 1`.
+- Đổi head về `standard` để tránh LayerNorm/depthwise ConvNeXt block ở cả main head và aux head.
+- Vẫn không dùng task-aligned, không decoupled head, không mosaic/TTA.
+- Mục tiêu: giữ neck hợp ConvNeXt hơn v7, nhưng train nhẹ hơn v8.
+
+Config chính:
+- `model.backbone: convnext_small`
+- `model.neck_type: convnext_pan`
+- `model.head_type: standard`
+- `model.elan_depth: 1`
+- `assignment_strategy: legacy`
+- `nms_type: diou`
+
+Kết quả:
+- mAP@0.5:
+- Precision:
+- Recall:
+- Thời gian train/epoch:
+- Thời gian mAP validation:
+- Tổng epoch train:
+- Epoch tốt nhất:
+- Ghi chú:
