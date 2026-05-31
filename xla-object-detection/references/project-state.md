@@ -27,7 +27,7 @@
 - mAP validation and best checkpoint start at epoch 30.
 - Only log versions in `EXPERIMENTS.md` when they are intended to be trained/evaluated.
 
-## Active v12 Summary
+## Active v14 Summary
 
 Config file: `configs/default.yaml`.
 
@@ -44,14 +44,14 @@ Core:
 
 Model:
 
-- `backbone: convnext_small`
+- `backbone: resnet50`
 - `pretrained: true`
-- `neck_type: fpnpan`
+- `neck_type: yolov7_pan`
 - `head_type: standard`
-- `neck_channels: 160`
-- `head_channels: 160`
-- `freeze_backbone_epochs: 80`
-- `backbone_trainable: none`
+- `neck_channels: 192`
+- `head_channels: 192`
+- `freeze_backbone_epochs: 2`
+- `backbone_trainable: layer4`
 - `aux_head: true`
 - `aux_head_close_epoch: 30`
 - `decoupled_head: false`
@@ -62,6 +62,7 @@ Loss/assignment:
 - `positive_anchor_topk: 3`
 - `decode_style: yolov7`
 - `target_offsets: true`
+- `classification_loss: bce`
 - `target_offset_bias: 0.5`
 - `scale_obj_balance: [4.0, 1.0, 0.4]`
 - `objectness_iou_mix: 1.0`
@@ -74,7 +75,10 @@ Inference:
 - `conf_threshold: 0.08`
 - `nms_threshold: 0.5`
 - `nms_type: diou`
+- `merge_nms: true`
 - `decode_style: yolov7`
+- `class_prior_bias.enabled: true`
+- `class_activation: sigmoid`
 - `pre_nms_topk: 300`
 - `class_pre_nms_topk: 100`
 - `tta_hflip: false`
@@ -92,6 +96,8 @@ Inference:
 - **v10**: reset to ResNet50, add YOLOv7-style PAN neck.
 - **v11**: add YOLOv7-style bbox decode, target offsets, scale objectness balance, CIoU-focused bbox loss.
 - **v12**: ConvNeXt-Small pretrained, fully frozen backbone, fast FPN/PAN adapter and standard head at 160 channels.
+- **v13**: reset to v11 ResNet50 path, add merge-NMS box fusion and class-prior bias init without increasing train/backward time.
+- **v14**: add YOLO-style BCE/sigmoid classification, late clean fine-tune, and nonzero final cosine LR on top of v13.
 
 ## Important Files
 

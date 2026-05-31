@@ -6,6 +6,7 @@ epochs: 80
 batch_size: 24
 val_batch_size: 64
 lr: 0.0001
+lr_final_factor: 0.05
 backbone_lr_mult: 0.2
 weight_decay: 0.0005
 num_workers: 4
@@ -15,8 +16,8 @@ seed: 42
 amp: true
 warmup_epochs: 3
 label_smoothing: 0.05
-freeze_backbone_epochs: 80
-backbone_trainable: none
+freeze_backbone_epochs: 2
+backbone_trainable: layer4
 backbone_freeze_bn: true
 early_stopping_patience: 10
 
@@ -34,18 +35,19 @@ augmentation:
   random_erasing_prob: 0.25
   random_erasing_min_area: 0.02
   random_erasing_max_area: 0.12
+  close_strong_aug_epoch: 55
 
 model:
-  backbone: convnext_small
+  backbone: resnet50
   pretrained: true
   base_channels: 40
-  head_channels: 160
-  neck_channels: 160
+  head_channels: 192
+  neck_channels: 192
   attention_heads: 0
   objectness_prior: 0.01
   dropout: 0.1
   elan_depth: 1
-  neck_type: fpnpan
+  neck_type: yolov7_pan
   head_type: standard
   aux_head: true
   aux_head_close_epoch: 30
@@ -65,6 +67,10 @@ class_weights:
   enabled: true
   overrides:
     chair: 1.25
+
+class_prior_bias:
+  enabled: true
+  smoothing: 1.0
 
 balanced_sampling:
   enabled: true
@@ -94,6 +100,7 @@ loss_weights:
   task_aligned_min_iou: 0.05
   noobj_hard_negative_ratio: 0.0
   noobj_hard_negative_min: 256
+  classification_loss: bce
 
 inference:
   conf_threshold: 0.08
@@ -101,23 +108,27 @@ inference:
   tta_hflip: false
   nms_threshold: 0.5
   nms_type: diou
+  merge_nms: true
   max_detections: 100
   pre_nms_topk: 300
   class_pre_nms_topk: 100
   decode_style: yolov7
+  class_activation: sigmoid
 
 validation_metric:
   enabled: true
-  start_epoch: 20
+  start_epoch: 30
   every: 1
   conf_threshold: 0.08
   class_conf_thresholds: {}
   tta_hflip: false
   nms_threshold: 0.5
   nms_type: diou
+  merge_nms: true
   pre_nms_topk: 300
   class_pre_nms_topk: 100
   decode_style: yolov7
+  class_activation: sigmoid
   tune: false
   tune_every: 5
   conf_thresholds: [0.08, 0.1, 0.12, 0.15]

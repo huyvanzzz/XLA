@@ -29,12 +29,14 @@ When this skill triggers inside the `D:\XLA` repo:
 
 ## Current Active Direction
 
-The active direction is **v12**:
+The active direction is **v14**:
 
-- ConvNeXt-Small pretrained backbone.
-- Backbone frozen for the full default 80 epochs to avoid expensive ConvNeXt backward passes.
-- Fast `fpnpan` neck plus `standard` head at 160 channels.
+- ResNet50 pretrained backbone.
+- YOLOv7-style PAN neck implemented locally.
 - YOLOv7-style bbox decode and light target-offset assignment.
+- BCE/sigmoid classification path is active.
+- Merge-NMS enabled for validation/inference box fusion.
+- Class-prior bias initialization enabled from train annotation distribution.
 - Legacy anchor assignment, not OTA/task-aligned.
 - DIoU-NMS implemented locally.
 

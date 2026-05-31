@@ -39,6 +39,7 @@ class YoloLoss(nn.Module):
         target_offsets: bool = False,
         target_offset_bias: float = 0.5,
         scale_obj_balance: list[float] | None = None,
+        classification_loss: str = "ce",
     ) -> None:
         super().__init__()
         self.anchors = [[(float(w), float(h)) for w, h in scale] for scale in anchors]
@@ -67,6 +68,7 @@ class YoloLoss(nn.Module):
         self.target_offsets = bool(target_offsets)
         self.target_offset_bias = float(target_offset_bias)
         self.scale_obj_balance = [float(v) for v in scale_obj_balance] if scale_obj_balance else []
+        self.classification_loss = str(classification_loss).lower()
         if class_weights is not None:
             self.register_buffer("class_weights", torch.tensor(class_weights, dtype=torch.float32))
         else:
@@ -226,13 +228,11 @@ class YoloLoss(nn.Module):
                     obj_target[pos_mask] = (1.0 - self.objectness_iou_mix) + self.objectness_iou_mix * quality
                 ciou = bbox_ciou(pred_pos_boxes, target_pos_boxes)
                 iou_loss = iou_loss + (1.0 - ciou).sum() / num_pos
-                cls_loss = cls_loss + F.cross_entropy(
+                cls_loss = cls_loss + self._classification_loss(
                     pred_cls_logit[pos_mask],
                     cls_targets[scale_idx][pos_mask],
-                    reduction="sum",
-                    weight=self.class_weights,
-                    label_smoothing=self.label_smoothing,
-                ) / num_pos
+                    normalizer=num_pos,
+                )
 
             obj_loss = obj_loss + balance * self._objectness_loss(
                 pred_obj_logit[pos_mask],
@@ -468,6 +468,24 @@ class YoloLoss(nn.Module):
             loss_vec = loss_vec.topk(k).values
             normalizer = loss_vec.new_tensor(float(k))
         return loss_vec.sum() / normalizer
+
+    def _classification_loss(self, logits: torch.Tensor, labels: torch.Tensor, normalizer: torch.Tensor) -> torch.Tensor:
+        if logits.numel() == 0:
+            return logits.sum() * 0.0
+        if self.classification_loss == "bce":
+            target = logits.new_full(logits.shape, self.label_smoothing / max(self.num_classes - 1, 1))
+            target.scatter_(1, labels[:, None], 1.0 - self.label_smoothing)
+            loss = F.binary_cross_entropy_with_logits(logits, target, reduction="none")
+            if self.class_weights is not None:
+                loss = loss * self.class_weights.to(logits.device, logits.dtype).view(1, -1)
+            return loss.sum() / normalizer
+        return F.cross_entropy(
+            logits,
+            labels,
+            reduction="sum",
+            weight=self.class_weights,
+            label_smoothing=self.label_smoothing,
+        ) / normalizer
 
     def _decode_boxes(self, pred: torch.Tensor, anchors: torch.Tensor) -> torch.Tensor:
         _, grid_h, grid_w, _, _ = pred.shape

@@ -27,10 +27,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--conf_threshold", type=float)
     parser.add_argument("--nms_threshold", type=float)
     parser.add_argument("--nms_type", choices=["hard", "soft", "diou"])
+    parser.add_argument("--merge_nms", action=argparse.BooleanOptionalAction)
     parser.add_argument("--max_detections", type=int)
     parser.add_argument("--pre_nms_topk", type=int)
     parser.add_argument("--class_pre_nms_topk", type=int)
     parser.add_argument("--decode_style", choices=["standard", "yolov7"])
+    parser.add_argument("--class_activation", choices=["softmax", "sigmoid"])
     parser.add_argument("--batch_size", type=int, default=16)
     return parser.parse_args()
 
@@ -38,7 +40,7 @@ def parse_args() -> argparse.Namespace:
 def apply_config(args: argparse.Namespace) -> argparse.Namespace:
     config = load_config(args.config)
     inference = config["inference"]
-    for name in ["conf_threshold", "nms_threshold", "nms_type", "max_detections", "pre_nms_topk", "class_pre_nms_topk", "decode_style"]:
+    for name in ["conf_threshold", "nms_threshold", "nms_type", "merge_nms", "max_detections", "pre_nms_topk", "class_pre_nms_topk", "decode_style", "class_activation"]:
         if getattr(args, name) is None:
             setattr(args, name, inference[name])
     return args
@@ -48,7 +50,9 @@ def main() -> None:
     args = parse_args()
     cli_conf_threshold = args.conf_threshold
     cli_nms_threshold = args.nms_threshold
+    cli_merge_nms = args.merge_nms
     cli_decode_style = args.decode_style
+    cli_class_activation = args.class_activation
     args = apply_config(args)
     image_dir = Path(args.image_dir)
     checkpoint_path = Path(args.checkpoint)
@@ -69,8 +73,12 @@ def main() -> None:
         args.conf_threshold = checkpoint.get("best_conf_threshold", args.conf_threshold)
     if cli_nms_threshold is None:
         args.nms_threshold = checkpoint.get("best_nms_threshold", args.nms_threshold)
+    if cli_merge_nms is None:
+        args.merge_nms = checkpoint.get("merge_nms", args.merge_nms)
     if cli_decode_style is None:
         args.decode_style = checkpoint.get("decode_style", checkpoint.get("loss_weights", {}).get("decode_style", args.decode_style))
+    if cli_class_activation is None:
+        args.class_activation = checkpoint.get("class_activation", args.class_activation)
     tta_hflip = bool(config["inference"].get("tta_hflip", False))
 
     model = TinyDetector(num_classes=len(classes), num_anchors=[len(scale) for scale in anchors], **model_config).to(device)
@@ -113,11 +121,13 @@ def main() -> None:
                     class_conf_thresholds=config["inference"].get("class_conf_thresholds", {}),
                     nms_threshold=args.nms_threshold,
                     nms_type=args.nms_type,
+                    merge_nms=bool(args.merge_nms),
                     max_detections=args.max_detections,
                     pre_nms_topk=args.pre_nms_topk,
                     class_pre_nms_topk=args.class_pre_nms_topk,
                     preserve_aspect=preserve_aspect,
                     decode_style=args.decode_style,
+                    class_activation=args.class_activation,
                 )
                 if pred_flip is not None:
                     flip_boxes = decode_predictions(
@@ -131,17 +141,20 @@ def main() -> None:
                         class_conf_thresholds=config["inference"].get("class_conf_thresholds", {}),
                         nms_threshold=args.nms_threshold,
                         nms_type=args.nms_type,
+                        merge_nms=bool(args.merge_nms),
                         max_detections=args.max_detections,
                         pre_nms_topk=args.pre_nms_topk,
                         class_pre_nms_topk=args.class_pre_nms_topk,
                         preserve_aspect=preserve_aspect,
                         decode_style=args.decode_style,
+                        class_activation=args.class_activation,
                     )
                     boxes = merge_detections(
                         boxes + flip_detections_horizontally(flip_boxes, orig_w),
                         classes=classes,
                         nms_threshold=args.nms_threshold,
                         nms_type=args.nms_type,
+                        merge_nms=bool(args.merge_nms),
                         max_detections=args.max_detections,
                     )
                 predictions.append({"image_id": image_path.name, "boxes": boxes})

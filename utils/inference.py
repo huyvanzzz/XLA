@@ -5,7 +5,7 @@ from pathlib import Path
 import torch
 from PIL import Image
 
-from utils.box_ops import clip_boxes, diou_nms, nms, soft_nms
+from utils.box_ops import box_iou, clip_boxes, diou_nms, nms, soft_nms
 from utils.dataset import DetectionDataset
 
 
@@ -47,11 +47,13 @@ def decode_predictions(
     class_conf_thresholds: dict[str, float] | None = None,
     nms_threshold: float = 0.5,
     nms_type: str = "hard",
+    merge_nms: bool = False,
     max_detections: int = 100,
     pre_nms_topk: int = 1000,
     class_pre_nms_topk: int = 100,
     preserve_aspect: bool = True,
     decode_style: str = "standard",
+    class_activation: str = "softmax",
 ) -> list[dict[str, object]]:
     if isinstance(pred, dict):
         preds = pred["main"]
@@ -78,6 +80,7 @@ def decode_predictions(
             orig_height,
             preserve_aspect=preserve_aspect,
             decode_style=decode_style,
+            class_activation=class_activation,
         )
         all_boxes.append(boxes)
         all_scores.append(scores)
@@ -123,14 +126,15 @@ def decode_predictions(
             kept = diou_nms(class_boxes, class_scores, nms_threshold)
         else:
             kept = nms(class_boxes, class_scores, nms_threshold)
-        for idx in kept:
-            box = class_boxes[idx]
+        kept_boxes = _merge_kept_boxes(class_boxes, class_scores, kept, nms_threshold) if merge_nms else class_boxes[kept]
+        kept_scores = class_scores[kept]
+        for box, score in zip(kept_boxes, kept_scores):
             if box[2] <= box[0] or box[3] <= box[1]:
                 continue
             results.append(
                 {
                     "class": class_name,
-                    "confidence": round(float(class_scores[idx].cpu()), 6),
+                    "confidence": round(float(score.cpu()), 6),
                     "bbox": [round(float(v), 2) for v in box.cpu().tolist()],
                 }
             )
@@ -158,6 +162,7 @@ def merge_detections(
     classes: list[str],
     nms_threshold: float,
     nms_type: str = "hard",
+    merge_nms: bool = False,
     max_detections: int = 100,
 ) -> list[dict[str, object]]:
     if not detections:
@@ -176,19 +181,37 @@ def merge_detections(
             kept = diou_nms(boxes, scores, nms_threshold)
         else:
             kept = nms(boxes, scores, nms_threshold)
-        for idx in kept:
-            box = boxes[idx]
+        kept_boxes = _merge_kept_boxes(boxes, scores, kept, nms_threshold) if merge_nms else boxes[kept]
+        kept_scores = scores[kept]
+        for box, score in zip(kept_boxes, kept_scores):
             if box[2] <= box[0] or box[3] <= box[1]:
                 continue
             results.append(
                 {
                     "class": class_name,
-                    "confidence": round(float(scores[idx]), 6),
+                    "confidence": round(float(score), 6),
                     "bbox": [round(float(v), 2) for v in box.tolist()],
                 }
             )
     results.sort(key=lambda item: float(item["confidence"]), reverse=True)
     return results[:max_detections]
+
+
+def _merge_kept_boxes(
+    boxes: torch.Tensor,
+    scores: torch.Tensor,
+    kept: torch.Tensor,
+    iou_threshold: float,
+) -> torch.Tensor:
+    if kept.numel() == 0:
+        return boxes.new_zeros((0, 4))
+    if boxes.shape[0] == 1:
+        return boxes[kept]
+    kept_boxes = boxes[kept]
+    ious = box_iou(kept_boxes, boxes)
+    weights = (ious > iou_threshold).to(scores.dtype) * scores.unsqueeze(0)
+    denom = weights.sum(dim=1, keepdim=True).clamp(min=1e-6)
+    return weights @ boxes / denom
 
 
 def _decode_scale(
@@ -200,6 +223,7 @@ def _decode_scale(
     orig_height: int,
     preserve_aspect: bool = True,
     decode_style: str = "standard",
+    class_activation: str = "softmax",
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     device = pred.device
     grid_h, grid_w, num_anchors, _ = pred.shape
@@ -237,7 +261,10 @@ def _decode_scale(
     ).reshape(-1, 4)
 
     object_scores = pred[..., 4].sigmoid().reshape(-1)
-    class_scores, labels = pred[..., 5:].softmax(dim=-1).reshape(-1, len(classes)).max(dim=1)
+    if class_activation == "sigmoid":
+        class_scores, labels = pred[..., 5:].sigmoid().reshape(-1, len(classes)).max(dim=1)
+    else:
+        class_scores, labels = pred[..., 5:].softmax(dim=-1).reshape(-1, len(classes)).max(dim=1)
     scores = object_scores * class_scores
 
     if preserve_aspect:

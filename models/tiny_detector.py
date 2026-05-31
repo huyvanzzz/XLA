@@ -570,6 +570,15 @@ class DetectionHead(nn.Module):
         with torch.no_grad():
             bias[:, 4].fill_(math.log(prior / (1.0 - prior)))
 
+    def initialize_class_biases(self, class_priors: torch.Tensor) -> None:
+        final_conv = self.head[-1]
+        if not isinstance(final_conv, nn.Conv2d) or final_conv.bias is None:
+            return
+        log_priors = class_priors.to(final_conv.bias.device, final_conv.bias.dtype).clamp(min=1e-6).log()
+        bias = final_conv.bias.view(self.num_anchors, self.pred_dim)
+        with torch.no_grad():
+            bias[:, 5 : 5 + log_priors.numel()].copy_(log_priors)
+
 
 class ConvNeXtDetectionHead(nn.Module):
     """Depthwise ConvNeXt-style prediction head with the same YOLO output layout."""
@@ -599,6 +608,15 @@ class ConvNeXtDetectionHead(nn.Module):
         bias = final_conv.bias.view(self.num_anchors, self.pred_dim)
         with torch.no_grad():
             bias[:, 4].fill_(math.log(prior / (1.0 - prior)))
+
+    def initialize_class_biases(self, class_priors: torch.Tensor) -> None:
+        final_conv = self.head[-1]
+        if not isinstance(final_conv, nn.Conv2d) or final_conv.bias is None:
+            return
+        log_priors = class_priors.to(final_conv.bias.device, final_conv.bias.dtype).clamp(min=1e-6).log()
+        bias = final_conv.bias.view(self.num_anchors, self.pred_dim)
+        with torch.no_grad():
+            bias[:, 5 : 5 + log_priors.numel()].copy_(log_priors)
 
 
 class DecoupledDetectionHead(nn.Module):
@@ -651,6 +669,15 @@ class DecoupledDetectionHead(nn.Module):
         if isinstance(final_cls, nn.Conv2d) and final_cls.bias is not None:
             with torch.no_grad():
                 final_cls.bias.zero_()
+
+    def initialize_class_biases(self, class_priors: torch.Tensor) -> None:
+        final_cls = self.cls_tower[-1]
+        if not isinstance(final_cls, nn.Conv2d) or final_cls.bias is None:
+            return
+        log_priors = class_priors.to(final_cls.bias.device, final_cls.bias.dtype).clamp(min=1e-6).log()
+        bias = final_cls.bias.view(self.num_anchors, self.num_classes)
+        with torch.no_grad():
+            bias[:, : log_priors.numel()].copy_(log_priors)
 
 
 class TinyDetector(nn.Module):
@@ -762,6 +789,13 @@ class TinyDetector(nn.Module):
             )
         for head in list(self.main_heads) + list(self.aux_heads):
             head.initialize_biases(objectness_prior=objectness_prior)
+
+    def initialize_class_biases(self, class_priors: list[float] | torch.Tensor) -> None:
+        priors = torch.as_tensor(class_priors, dtype=torch.float32)
+        priors = priors / priors.sum().clamp(min=1e-6)
+        for head in list(self.main_heads) + list(self.aux_heads):
+            if hasattr(head, "initialize_class_biases"):
+                head.initialize_class_biases(priors)
 
     def forward(self, x: torch.Tensor) -> dict[str, list[torch.Tensor]]:
         if self.backbone_name == "resnet50":

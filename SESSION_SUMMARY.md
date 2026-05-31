@@ -14,9 +14,9 @@ Muc dich file nay: dung de mo chat moi ma van tiep tuc dung huong. Doc file nay 
 
 - Resize truc tiep anh ve `512x512`, khong letterbox.
 - `preserve_aspect: false`.
-- ConvNeXt-Small pretrained backbone.
-- Backbone dang freeze toan bo 80 epoch de tranh backward qua ConvNeXt-Small va giu train-time khong tang qua nhieu.
-- Detector adapter dung `fpnpan` + `standard` head 160 channels, nhe hon ConvNeXt-PAN/ConvNeXt head truoc do.
+- ResNet50 pretrained backbone.
+- Sau warmup chi fine-tune `resnet.layer4`; cac layer thap hon freeze.
+- Neck active la YOLOv7-style PAN, head standard 192 channels.
 - Optimizer: AdamW voi param groups, backbone LR nho hon detector LR.
 - Validation chon `best.pth` theo `mAP@0.5`, khong theo val loss.
 - `validation_loss.enabled: false`.
@@ -36,8 +36,8 @@ Diem quan trong:
 - `amp: true`
 - `channels_last: true`
 - `cudnn_benchmark: true`
-- `freeze_backbone_epochs: 80`
-- `backbone_trainable: none`
+- `freeze_backbone_epochs: 2`
+- `backbone_trainable: layer4`
 - `backbone_freeze_bn: true`
 - `early_stopping_patience: 10`
 - `augmentation.mosaic_prob: 0.0`
@@ -48,12 +48,12 @@ Diem quan trong:
 - `validation_metric.nms_type: diou`
 
 Model hien tai:
-- `backbone: convnext_small`
+- `backbone: resnet50`
 - `pretrained: true`
-- `neck_channels: 160`
-- `head_channels: 160`
+- `neck_channels: 192`
+- `head_channels: 192`
 - `attention_heads: 0`
-- `neck_type: fpnpan`
+- `neck_type: yolov7_pan`
 - `head_type: standard`
 - `elan_depth: 1`
 - `aux_head: true`
@@ -83,7 +83,7 @@ Xem chi tiet trong `EXPERIMENTS.md`.
 - v2/v3: direct resize 512, train nhanh hon; user bao v3 len khoang `0.615`, train/epoch khoang `4'30`, best gan epoch 60.
 - v4: hard-negative + mosaic + TTA, ket qua rat te; da reset/tat.
 - v5: Task-Aligned Assignment + Decoupled Detection Head + tat aux head tu epoch 30. Bi reset vi train lau va khong on.
-- Hien tai active: v12 dung ConvNeXt-Small pretrained backbone, freeze backbone toan bo, `fpnpan` + `standard` head 160 channels, va giu YOLOv7-style decode/loss cua v11. Muc tieu la backbone manh hon ResNet50 nhung train-time khong tang qua nhieu nhu cac ban ConvNeXt fine-tune/ConvNeXt-PAN.
+- Hien tai active: v14 dua tren v11/v13. ResNet50 pretrained + YOLOv7-style PAN/decode/loss core, them BCE/sigmoid class loss, merge-NMS, class-prior bias init, late clean fine-tune, va cosine LR final factor. Muc tieu la cai thien ranking/class confidence va box cuoi train ma train/epoch gan nhu khong tang.
 
 ## Ly do reset ve v3
 
@@ -120,6 +120,20 @@ V12 la huong ConvNeXt moi theo yeu cau:
 - giu YOLOv7-style decode/loss cua v11 va DIoU-NMS;
 - muc tieu: feature extractor manh hon nhung train gan toc do v3/v11 hon cac ban ConvNeXt fine-tune.
 
+V13 reset ve v11 va cai tien nhe:
+- active config quay ve `resnet50`, `neck_type: yolov7_pan`, `head/neck_channels: 192`;
+- `freeze_backbone_epochs: 2`, `backbone_trainable: layer4`;
+- them `merge_nms: true` trong validation/inference: sau khi NMS giu box, box duoc tinh trung binh theo score voi cac box cung class co IoU cao;
+- them `class_prior_bias.enabled: true`: khoi tao class logits theo phan phoi class trong train annotation;
+- cac cai tien nay khong lam train/backward cham hon, merge-NMS chi them mot buoc post-process nho khi validation/predict.
+
+V14 cai tien rong hon tren nen v11/v13:
+- `loss_weights.classification_loss: bce`;
+- `inference.class_activation: sigmoid` va validation cung dung sigmoid;
+- `augmentation.close_strong_aug_epoch: 55` tat random crop/scale/erasing cuoi train;
+- `lr_final_factor: 0.05` de LR cuoi cosine khong ve gan 0;
+- van khong dung OTA/task-aligned/decoupled head nang.
+
 Neu tiep tuc cai tien, uu tien cac huong khong tang thoi gian train:
 - post-processing / per-class threshold sau train;
 - DIoU-NMS dang duoc bat mac dinh vi khong tang train time;
@@ -146,7 +160,7 @@ Neu tiep tuc cai tien, uu tien cac huong khong tang thoi gian train:
 
 Thu tu nen lam:
 
-1. Train/evaluate active v12 truoc, ghi mAP/precision/recall/time vao `EXPERIMENTS.md`.
+1. Train/evaluate active v14 truoc, ghi mAP/precision/recall/time vao `EXPERIMENTS.md`.
 2. Neu can cai tien ma khong tang train time: lam post-hoc threshold/NMS per class sau train, hoac sua predict/evaluate pipeline.
 3. Neu can sua model/loss: chi them cai co chi phi gan nhu bang 0; khong quay lai task-aligned/decoupled neu user khong chap nhan train cham.
 4. Neu precision van qua thap: xem per-class predictions, dac biet `chair`; can nhac post-hoc class threshold tuning ngoai train, khong bat grid trong train.

@@ -121,6 +121,15 @@ def compute_class_weights(annotation_path: str, classes: list[str]) -> list[floa
     return [float(v) for v in weights.tolist()]
 
 
+def compute_class_priors(annotation_path: str, classes: list[str], smoothing: float = 1.0) -> list[float]:
+    with Path(annotation_path).open("r", encoding="utf-8") as f:
+        data = json.load(f)
+    counts = Counter(ann["class"] for ann in data["annotations"])
+    values = torch.tensor([float(counts.get(cls, 0)) + float(smoothing) for cls in classes])
+    values = values / values.sum().clamp(min=1e-6)
+    return [float(v) for v in values.tolist()]
+
+
 def apply_class_weight_overrides(weights: list[float], classes: list[str], overrides: dict[str, float] | None) -> list[float]:
     if not overrides:
         return weights
@@ -453,11 +462,13 @@ def evaluate_map(
     class_conf_thresholds: dict[str, float] | None,
     nms_threshold: float,
     nms_type: str,
+    merge_nms: bool,
     pre_nms_topk: int,
     class_pre_nms_topk: int,
     preserve_aspect: bool,
     channels_last: bool,
     decode_style: str,
+    class_activation: str,
 ) -> dict[str, float]:
     model.eval()
     predictions = []
@@ -477,10 +488,12 @@ def evaluate_map(
                 class_conf_thresholds=class_conf_thresholds,
                 nms_threshold=nms_threshold,
                 nms_type=nms_type,
+                merge_nms=merge_nms,
                 pre_nms_topk=pre_nms_topk,
                 class_pre_nms_topk=class_pre_nms_topk,
                 preserve_aspect=preserve_aspect,
                 decode_style=decode_style,
+                class_activation=class_activation,
             )
             predictions.append({"image_id": str(target["image_id"]), "boxes": boxes})
 
@@ -519,11 +532,13 @@ def evaluate_map_with_optional_tuning(
                 class_conf_thresholds=metric_config.get("class_conf_thresholds", {}),
                 nms_threshold=float(nms_threshold),
                 nms_type=str(metric_config.get("nms_type", "soft")),
+                merge_nms=bool(metric_config.get("merge_nms", False)),
                 pre_nms_topk=int(metric_config.get("pre_nms_topk", 1000)),
                 class_pre_nms_topk=int(metric_config.get("class_pre_nms_topk", 100)),
                 preserve_aspect=bool(metric_config.get("preserve_aspect", True)),
                 channels_last=bool(metric_config.get("channels_last", False)),
                 decode_style=str(metric_config.get("decode_style", "standard")),
+                class_activation=str(metric_config.get("class_activation", "softmax")),
             )
             if best is None or result["map50"] > best["map50"]:
                 best = result
@@ -603,6 +618,14 @@ def main() -> None:
     )
 
     model = TinyDetector(num_classes=len(classes), num_anchors=[len(scale) for scale in anchors], **model_config).to(device)
+    if bool(config.get("class_prior_bias", {}).get("enabled", False)):
+        class_priors = compute_class_priors(
+            args.train_data,
+            classes,
+            smoothing=float(config.get("class_prior_bias", {}).get("smoothing", 1.0)),
+        )
+        model.initialize_class_biases(class_priors)
+        print(f"class prior bias: {class_priors}")
     if channels_last:
         model = model.to(memory_format=torch.channels_last)
     criterion = YoloLoss(
@@ -633,6 +656,7 @@ def main() -> None:
         target_offsets=bool(loss_weights.get("target_offsets", False)),
         target_offset_bias=float(loss_weights.get("target_offset_bias", 0.5)),
         scale_obj_balance=loss_weights.get("scale_obj_balance"),
+        classification_loss=str(loss_weights.get("classification_loss", "ce")),
     ).to(device)
     decay_backbone = []
     decay_detector = []
@@ -666,7 +690,9 @@ def main() -> None:
         if args.warmup_epochs > 0 and epoch < args.warmup_epochs:
             return float(epoch + 1) / float(args.warmup_epochs)
         progress = (epoch - args.warmup_epochs) / max(args.epochs - args.warmup_epochs, 1)
-        return 0.5 * (1.0 + torch.cos(torch.tensor(progress * 3.1415926535))).item()
+        final_factor = float(config.get("lr_final_factor", 0.0))
+        cosine = 0.5 * (1.0 + torch.cos(torch.tensor(progress * 3.1415926535))).item()
+        return final_factor + (1.0 - final_factor) * cosine
 
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_lambda)
     scaler = torch.amp.GradScaler("cuda", enabled=args.amp and device.type == "cuda")
@@ -683,6 +709,7 @@ def main() -> None:
     best_score = float("-inf") if use_map_for_best else float("inf")
     epochs_without_improvement = 0
     mosaic_closed = False
+    strong_aug_closed = False
     aux_head_closed = False
     for epoch in range(1, args.epochs + 1):
         close_mosaic_epoch = int(config["augmentation"].get("close_mosaic_epoch", 0))
@@ -690,6 +717,12 @@ def main() -> None:
             train_set.augment_config["mosaic_prob"] = 0.0
             mosaic_closed = True
             print(f"closing mosaic augmentation at epoch {epoch}")
+        close_strong_aug_epoch = int(config["augmentation"].get("close_strong_aug_epoch", 0))
+        if close_strong_aug_epoch > 0 and epoch >= close_strong_aug_epoch and not strong_aug_closed:
+            for key in ["random_crop_prob", "random_scale_prob", "random_erasing_prob"]:
+                train_set.augment_config[key] = 0.0
+            strong_aug_closed = True
+            print(f"closing strong augmentation at epoch {epoch}")
 
         if config["multi_scale"]["enabled"]:
             train_size = int(random.choice(config["multi_scale"]["sizes"]))
@@ -816,6 +849,7 @@ def main() -> None:
                 "target_offsets": bool(loss_weights.get("target_offsets", False)),
                 "target_offset_bias": float(loss_weights.get("target_offset_bias", 0.5)),
                 "scale_obj_balance": loss_weights.get("scale_obj_balance"),
+                "classification_loss": str(loss_weights.get("classification_loss", "ce")),
             },
             "lr": args.lr,
             "backbone_lr_mult": args.backbone_lr_mult,
@@ -832,9 +866,11 @@ def main() -> None:
             "best_conf_threshold": metric_logs["conf_threshold"] if metric_logs is not None else config["inference"]["conf_threshold"],
             "best_nms_threshold": metric_logs["nms_threshold"] if metric_logs is not None else config["inference"]["nms_threshold"],
             "nms_type": config["validation_metric"].get("nms_type", config["inference"].get("nms_type", "soft")),
+            "merge_nms": config["validation_metric"].get("merge_nms", config["inference"].get("merge_nms", False)),
             "pre_nms_topk": config["validation_metric"].get("pre_nms_topk", config["inference"].get("pre_nms_topk", 1000)),
             "class_pre_nms_topk": config["validation_metric"].get("class_pre_nms_topk", config["inference"].get("class_pre_nms_topk", 100)),
             "decode_style": config["validation_metric"].get("decode_style", config["inference"].get("decode_style", "standard")),
+            "class_activation": config["validation_metric"].get("class_activation", config["inference"].get("class_activation", "softmax")),
         }
         if ema is not None:
             state["model"] = ema.module.state_dict()

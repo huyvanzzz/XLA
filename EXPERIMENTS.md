@@ -389,12 +389,12 @@ Config chính:
 - `objectness_iou_mix: 1.0`
 
 Kết quả:
-- mAP@0.5:
+- mAP@0.5: 72,8
 - Precision:
 - Recall:
-- Thời gian train/epoch:
-- Thời gian mAP validation:
-- Tổng epoch train:
+- Thời gian train/epoch: 8'
+- Thời gian mAP validation: 55s
+- Tổng epoch train: 55
 - Epoch tốt nhất:
 - Ghi chú:
 
@@ -427,6 +427,78 @@ Config chinh:
 - `conf_threshold: 0.08`
 - `decode_style: yolov7`
 - `nms_type: diou`
+
+Ket qua:
+- mAP@0.5:
+- Precision:
+- Recall:
+- Thoi gian train/epoch:
+- Thoi gian mAP validation:
+- Tong epoch train:
+- Epoch tot nhat:
+- Ghi chu:
+
+## v13_resnet50_v11_merge_nms
+
+Ngay:
+
+Mo ta:
+- Reset active config ve nen v11 vi ConvNeXt khong ngon bang ky vong.
+- Dung lai `resnet50` pretrained + `yolov7_pan`.
+- Dung lai `head_channels: 192`, `neck_channels: 192`.
+- Dung lai fine-tune nhe `resnet.layer4` sau 2 epoch warmup.
+- Giu YOLOv7-style loss/decode cua v11: target offsets, objectness IoU mix 1.0, scale obj balance `[4.0, 1.0, 0.4]`, CIoU la bbox loss chinh.
+- Cai tien moi: bat `merge_nms: true` trong validation/inference.
+- Merge-NMS fuse toa do box sau NMS bang trung binh co trong so theo score voi cac box cung class co IoU cao.
+- Them class-prior bias init: khoi tao class logits theo phan phoi class trong train annotation, khong them compute luc train.
+- Muc tieu: cai thien localization/ranking mAP@0.5 ma khong tang thoi gian train/backward. Chi co validation/predict them mot buoc post-process nho.
+
+Config chinh:
+- `model.backbone: resnet50`
+- `model.neck_type: yolov7_pan`
+- `model.head_type: standard`
+- `model.neck_channels: 192`
+- `model.head_channels: 192`
+- `freeze_backbone_epochs: 2`
+- `backbone_trainable: layer4`
+- `decode_style: yolov7`
+- `nms_type: diou`
+- `merge_nms: true`
+- `class_prior_bias.enabled: true`
+
+Ket qua:
+- mAP@0.5:
+- Precision:
+- Recall:
+- Thoi gian train/epoch:
+- Thoi gian mAP validation:
+- Tong epoch train:
+- Epoch tot nhat:
+- Ghi chu:
+
+## v14_resnet50_yolov7_bce_late_finetune
+
+Ngay:
+
+Mo ta:
+- Cai tien rong hon tren nen v11/v13, van giu ResNet50 pretrained + YOLOv7 PAN/decode/loss core.
+- Doi classification loss tu CE/softmax sang BCE/sigmoid theo logic YOLO-style head: moi class logit doc lap, inference lay `obj * max(sigmoid(class))`.
+- Giu CIoU/objectness/target-offset cua v11, khong dung OTA/task-aligned vi qua nang.
+- Giu merge-NMS va class-prior bias init cua v13.
+- Them late clean fine-tune: tu epoch 55 tat random crop, random scale, random erasing de cac epoch cuoi hoc tren phan phoi anh that hon.
+- Them `lr_final_factor: 0.05` de cosine LR khong roi sat 0 qua som, giu kha nang tinh chinh sau epoch 55.
+- Muc tieu: cai thien ranking/class confidence va on dinh box cuoi train, trong khi train/epoch gan nhu giu bang v11/v13.
+
+Config chinh:
+- `model.backbone: resnet50`
+- `model.neck_type: yolov7_pan`
+- `loss_weights.classification_loss: bce`
+- `inference.class_activation: sigmoid`
+- `validation_metric.class_activation: sigmoid`
+- `augmentation.close_strong_aug_epoch: 55`
+- `lr_final_factor: 0.05`
+- `merge_nms: true`
+- `class_prior_bias.enabled: true`
 
 Ket qua:
 - mAP@0.5:
