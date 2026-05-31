@@ -108,7 +108,7 @@ inference:
 
 validation_metric:
   enabled: true
-  start_epoch: 30
+  start_epoch: 20
   every: 1
   conf_threshold: 0.08
   class_conf_thresholds: {}
