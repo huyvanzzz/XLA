@@ -397,3 +397,43 @@ Kết quả:
 - Tổng epoch train:
 - Epoch tốt nhất:
 - Ghi chú:
+
+## v12_convnext_small_frozen_fast
+
+Ngay:
+
+Mo ta:
+- Huong ConvNeXt moi de hop backbone manh hon nhung khong lam train-time tang qua nhieu.
+- Dung `convnext_small` pretrained, khong dung Tiny.
+- Freeze backbone trong toan bo 80 epoch bang `freeze_backbone_epochs: 80` va `backbone_trainable: none`.
+- Ly do freeze: van tan dung pretrained feature extractor manh, nhung tranh backward qua ConvNeXt-Small, phan thuong lam train cham nhat.
+- Khong dung `convnext_pan`/ConvNeXt head nang cua v8-v9 vi LayerNorm/depthwise/permute lam train cham.
+- Dung lai `fpnpan` + `standard` head, giam `neck_channels/head_channels` xuong 160 de detector adapter nhanh hon.
+- Giu direct resize `512x512`, khong letterbox.
+- Giu YOLOv7-style decode/loss cua v11: decode `sigmoid*2-0.5`, `(sigmoid*2)^2*anchor`, target offsets, scale obj balance.
+- Giu DIoU-NMS tu cai, khong dung torchvision NMS.
+- Giu validation mAP bat dau tu epoch 30 va chon `best.pth` theo `mAP@0.5`.
+
+Config chinh:
+- `model.backbone: convnext_small`
+- `model.pretrained: true`
+- `model.neck_type: fpnpan`
+- `model.head_type: standard`
+- `model.neck_channels: 160`
+- `model.head_channels: 160`
+- `freeze_backbone_epochs: 80`
+- `backbone_trainable: none`
+- `batch_size: 24`
+- `conf_threshold: 0.08`
+- `decode_style: yolov7`
+- `nms_type: diou`
+
+Ket qua:
+- mAP@0.5:
+- Precision:
+- Recall:
+- Thoi gian train/epoch:
+- Thoi gian mAP validation:
+- Tong epoch train:
+- Epoch tot nhat:
+- Ghi chu:

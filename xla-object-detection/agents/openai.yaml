@@ -1,0 +1,4 @@
+interface:
+  display_name: "XLA Object Detection"
+  short_description: "Continue optimizing the XLA from-scratch object detector."
+  default_prompt: "Read the skill and continue improving the XLA object detection repo while respecting the assignment constraints."
