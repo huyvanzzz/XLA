@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 from copy import deepcopy
 from contextlib import nullcontext
 from collections import Counter
@@ -171,6 +172,8 @@ def fit_auto_anchors(
     image_size: int,
     per_scale: int = 3,
     iters: int = 40,
+    evolve_generations: int = 0,
+    anchor_threshold: float = 4.0,
     preserve_aspect: bool = True,
 ) -> list[list[tuple[float, float]]]:
     with Path(annotation_path).open("r", encoding="utf-8") as f:
@@ -198,11 +201,34 @@ def fit_auto_anchors(
             selected = wh[assignment == idx]
             if selected.numel() > 0:
                 anchors[idx] = selected.median(dim=0).values
+    if evolve_generations > 0:
+        anchors = evolve_anchors(anchors, wh, generations=evolve_generations, threshold=anchor_threshold)
     anchors = anchors[anchors.prod(dim=1).argsort()]
     return [
         [(float(w), float(h)) for w, h in anchors[i * per_scale : (i + 1) * per_scale].tolist()]
         for i in range(3)
     ]
+
+
+def evolve_anchors(anchors: torch.Tensor, wh: torch.Tensor, generations: int = 150, threshold: float = 4.0) -> torch.Tensor:
+    thr = 1.0 / max(float(threshold), 1e-6)
+
+    def fitness(candidate: torch.Tensor) -> torch.Tensor:
+        ratio = wh[:, None, :] / candidate[None, :, :].clamp(min=1e-6)
+        match = torch.min(ratio, 1.0 / ratio).min(dim=2).values
+        best = match.max(dim=1).values
+        return (best * (best > thr).float()).mean()
+
+    best = anchors.clone().clamp(min=2.0)
+    best_fitness = fitness(best)
+    for _ in range(max(0, int(generations))):
+        mutation = (torch.randn_like(best) * 0.10 + 1.0).clamp(0.3, 3.0)
+        mask = (torch.rand_like(best) < 0.90).float()
+        candidate = (best * (mask * mutation + (1.0 - mask))).clamp(min=2.0)
+        candidate_fitness = fitness(candidate)
+        if candidate_fitness > best_fitness:
+            best, best_fitness = candidate, candidate_fitness
+    return best
 
 
 def bbox_iou_list(box_a: list[float], box_b: list[float]) -> float:
@@ -312,19 +338,23 @@ def evaluate_predictions_map(
 
 
 class ModelEMA:
-    def __init__(self, model: TinyDetector, decay: float = 0.999) -> None:
+    def __init__(self, model: TinyDetector, decay: float = 0.999, tau: int = 2000) -> None:
         self.module = deepcopy(model).eval()
         self.decay = decay
+        self.tau = max(1, int(tau))
+        self.updates = 0
         for parameter in self.module.parameters():
             parameter.requires_grad_(False)
 
     @torch.no_grad()
     def update(self, model: TinyDetector) -> None:
+        self.updates += 1
+        decay = self.decay * (1.0 - math.exp(-self.updates / self.tau))
         model_state = model.state_dict()
         for name, ema_value in self.module.state_dict().items():
             model_value = model_state[name].detach()
             if ema_value.dtype.is_floating_point:
-                ema_value.mul_(self.decay).add_(model_value, alpha=1.0 - self.decay)
+                ema_value.mul_(decay).add_(model_value, alpha=1.0 - decay)
             else:
                 ema_value.copy_(model_value)
 
@@ -564,6 +594,8 @@ def main() -> None:
             image_size=args.image_size,
             per_scale=int(config["anchors"].get("per_scale", 3)),
             iters=int(config["anchors"].get("kmeans_iters", 40)),
+            evolve_generations=int(config["anchors"].get("evolve_generations", 0)),
+            anchor_threshold=float(config["anchors"].get("anchor_threshold", 4.0)),
             preserve_aspect=preserve_aspect,
         )
         print(f"auto anchors: {anchors}")
@@ -626,6 +658,12 @@ def main() -> None:
         )
         model.initialize_class_biases(class_priors)
         print(f"class prior bias: {class_priors}")
+    if bool(config.get("objectness_bias", {}).get("enabled", False)):
+        objectness_logits = model.initialize_scale_objectness_biases(
+            image_size=args.image_size,
+            nominal_objects=float(config.get("objectness_bias", {}).get("nominal_objects", 8.0)),
+        )
+        print(f"scale objectness bias logits: {[round(v, 4) for v in objectness_logits]}")
     if channels_last:
         model = model.to(memory_format=torch.channels_last)
     criterion = YoloLoss(
@@ -657,6 +695,7 @@ def main() -> None:
         target_offset_bias=float(loss_weights.get("target_offset_bias", 0.5)),
         scale_obj_balance=loss_weights.get("scale_obj_balance"),
         classification_loss=str(loss_weights.get("classification_loss", "ce")),
+        classification_quality_mix=float(loss_weights.get("classification_quality_mix", 0.0)),
     ).to(device)
     decay_backbone = []
     decay_detector = []
@@ -696,7 +735,11 @@ def main() -> None:
 
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_lambda)
     scaler = torch.amp.GradScaler("cuda", enabled=args.amp and device.type == "cuda")
-    ema = ModelEMA(model, decay=float(config["ema"]["decay"])) if config["ema"]["enabled"] else None
+    ema = (
+        ModelEMA(model, decay=float(config["ema"]["decay"]), tau=int(config["ema"].get("tau", 2000)))
+        if config["ema"]["enabled"]
+        else None
+    )
     freeze_backbone_epochs = int(config["freeze_backbone_epochs"])
     backbone_trainable = str(config.get("backbone_trainable", "layer4"))
     freeze_backbone_bn = bool(config.get("backbone_freeze_bn", True))
@@ -850,6 +893,7 @@ def main() -> None:
                 "target_offset_bias": float(loss_weights.get("target_offset_bias", 0.5)),
                 "scale_obj_balance": loss_weights.get("scale_obj_balance"),
                 "classification_loss": str(loss_weights.get("classification_loss", "ce")),
+                "classification_quality_mix": float(loss_weights.get("classification_quality_mix", 0.0)),
             },
             "lr": args.lr,
             "backbone_lr_mult": args.backbone_lr_mult,

@@ -501,6 +501,42 @@ Config chinh:
 - `class_prior_bias.enabled: true`
 
 Ket qua:
+- mAP@0.5: 73.5
+- Precision:
+- Recall:
+- Thoi gian train/epoch: 6'
+- Thoi gian mAP validation: 55s
+- Tong epoch train:
+- Epoch tot nhat:
+- Ghi chu:
+
+## v15_yolov7_freebies_quality_anchor_ema
+
+Ngay:
+
+Mo ta:
+- Cai tien tiep tren nen v14 da dat mAP@0.5 = 73.5.
+- Van giu ResNet50 pretrained + YOLOv7 PAN + YOLOv7 decode/loss core.
+- Khong them backbone/head/assignment nang, nen thoi gian train moi epoch khong tang dang ke.
+- Them quality-aware BCE classification target: positive class target duoc tron nhe voi IoU quality (`classification_quality_mix: 0.25`) de confidence ranking gan AP hon.
+- Them scale-aware objectness bias init theo stride, dua tren cong thuc bias cua YOLOv7 (`nominal_objects: 8.0`).
+- Them EMA ramp theo YOLOv7: EMA decay tang dan theo update, tranh EMA qua i o dau train.
+- Cai tien auto anchors: sau kmeans co genetic/evolution nhe theo ratio fitness nhu YOLO autoanchor. Phan nay chi chay truoc train, khong tang time/epoch.
+- Giu late clean fine-tune, BCE/sigmoid class path, merge-NMS, class-prior bias cua v14.
+
+Config chinh:
+- `loss_weights.classification_loss: bce`
+- `loss_weights.classification_quality_mix: 0.25`
+- `objectness_bias.enabled: true`
+- `objectness_bias.nominal_objects: 8.0`
+- `anchors.evolve_generations: 150`
+- `anchors.anchor_threshold: 4.0`
+- `ema.decay: 0.999`
+- `ema.tau: 2000`
+- `inference.class_activation: sigmoid`
+- `merge_nms: true`
+
+Ket qua:
 - mAP@0.5:
 - Precision:
 - Recall:

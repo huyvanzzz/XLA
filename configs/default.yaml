@@ -57,6 +57,8 @@ model:
 anchors:
   auto: true
   kmeans_iters: 40
+  evolve_generations: 150
+  anchor_threshold: 4.0
   per_scale: 3
   values:
   - [[10.0, 13.0], [16.0, 24.0], [32.0, 32.0]]
@@ -71,6 +73,10 @@ class_weights:
 class_prior_bias:
   enabled: true
   smoothing: 1.0
+
+objectness_bias:
+  enabled: true
+  nominal_objects: 8.0
 
 balanced_sampling:
   enabled: true
@@ -101,6 +107,7 @@ loss_weights:
   noobj_hard_negative_ratio: 0.0
   noobj_hard_negative_min: 256
   classification_loss: bce
+  classification_quality_mix: 0.25
 
 inference:
   conf_threshold: 0.08
@@ -117,7 +124,7 @@ inference:
 
 validation_metric:
   enabled: true
-  start_epoch: 30
+  start_epoch: 40
   every: 1
   conf_threshold: 0.08
   class_conf_thresholds: {}
@@ -137,3 +144,4 @@ validation_metric:
 ema:
   enabled: true
   decay: 0.999
+  tau: 2000

@@ -29,12 +29,14 @@ When this skill triggers inside the `D:\XLA` repo:
 
 ## Current Active Direction
 
-The active direction is **v14**:
+The active direction is **v15**:
 
 - ResNet50 pretrained backbone.
 - YOLOv7-style PAN neck implemented locally.
 - YOLOv7-style bbox decode and light target-offset assignment.
 - BCE/sigmoid classification path is active.
+- Quality-aware class target is active.
+- Scale-aware objectness bias and EMA ramp are active.
 - Merge-NMS enabled for validation/inference box fusion.
 - Class-prior bias initialization enabled from train annotation distribution.
 - Legacy anchor assignment, not OTA/task-aligned.

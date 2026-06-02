@@ -579,6 +579,14 @@ class DetectionHead(nn.Module):
         with torch.no_grad():
             bias[:, 5 : 5 + log_priors.numel()].copy_(log_priors)
 
+    def initialize_objectness_bias(self, objectness_logit: float) -> None:
+        final_conv = self.head[-1]
+        if not isinstance(final_conv, nn.Conv2d) or final_conv.bias is None:
+            return
+        bias = final_conv.bias.view(self.num_anchors, self.pred_dim)
+        with torch.no_grad():
+            bias[:, 4].fill_(float(objectness_logit))
+
 
 class ConvNeXtDetectionHead(nn.Module):
     """Depthwise ConvNeXt-style prediction head with the same YOLO output layout."""
@@ -617,6 +625,14 @@ class ConvNeXtDetectionHead(nn.Module):
         bias = final_conv.bias.view(self.num_anchors, self.pred_dim)
         with torch.no_grad():
             bias[:, 5 : 5 + log_priors.numel()].copy_(log_priors)
+
+    def initialize_objectness_bias(self, objectness_logit: float) -> None:
+        final_conv = self.head[-1]
+        if not isinstance(final_conv, nn.Conv2d) or final_conv.bias is None:
+            return
+        bias = final_conv.bias.view(self.num_anchors, self.pred_dim)
+        with torch.no_grad():
+            bias[:, 4].fill_(float(objectness_logit))
 
 
 class DecoupledDetectionHead(nn.Module):
@@ -678,6 +694,14 @@ class DecoupledDetectionHead(nn.Module):
         bias = final_cls.bias.view(self.num_anchors, self.num_classes)
         with torch.no_grad():
             bias[:, : log_priors.numel()].copy_(log_priors)
+
+    def initialize_objectness_bias(self, objectness_logit: float) -> None:
+        final_reg = self.reg_tower[-1]
+        if not isinstance(final_reg, nn.Conv2d) or final_reg.bias is None:
+            return
+        bias = final_reg.bias.view(self.num_anchors, 5)
+        with torch.no_grad():
+            bias[:, 4].fill_(float(objectness_logit))
 
 
 class TinyDetector(nn.Module):
@@ -796,6 +820,22 @@ class TinyDetector(nn.Module):
         for head in list(self.main_heads) + list(self.aux_heads):
             if hasattr(head, "initialize_class_biases"):
                 head.initialize_class_biases(priors)
+
+    def initialize_scale_objectness_biases(self, image_size: int, nominal_objects: float = 8.0) -> list[float]:
+        strides = [8.0, 16.0, 32.0]
+        logits: list[float] = []
+        all_heads = [self.main_heads]
+        if self.aux_heads:
+            all_heads.append(self.aux_heads)
+        for scale_idx, stride in enumerate(strides):
+            grid = max(float(image_size) / stride, 1.0)
+            prior = min(max(float(nominal_objects) / (grid * grid), 1e-5), 1.0 - 1e-4)
+            logit = math.log(prior / (1.0 - prior))
+            logits.append(logit)
+            for heads in all_heads:
+                if scale_idx < len(heads) and hasattr(heads[scale_idx], "initialize_objectness_bias"):
+                    heads[scale_idx].initialize_objectness_bias(logit)
+        return logits
 
     def forward(self, x: torch.Tensor) -> dict[str, list[torch.Tensor]]:
         if self.backbone_name == "resnet50":

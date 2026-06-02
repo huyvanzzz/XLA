@@ -27,7 +27,7 @@
 - mAP validation and best checkpoint start at epoch 30.
 - Only log versions in `EXPERIMENTS.md` when they are intended to be trained/evaluated.
 
-## Active v14 Summary
+## Active v15 Summary
 
 Config file: `configs/default.yaml`.
 
@@ -63,6 +63,7 @@ Loss/assignment:
 - `decode_style: yolov7`
 - `target_offsets: true`
 - `classification_loss: bce`
+- `classification_quality_mix: 0.25`
 - `target_offset_bias: 0.5`
 - `scale_obj_balance: [4.0, 1.0, 0.4]`
 - `objectness_iou_mix: 1.0`
@@ -79,6 +80,9 @@ Inference:
 - `decode_style: yolov7`
 - `class_prior_bias.enabled: true`
 - `class_activation: sigmoid`
+- `objectness_bias.enabled: true`
+- `ema.tau: 2000`
+- `anchors.evolve_generations: 150`
 - `pre_nms_topk: 300`
 - `class_pre_nms_topk: 100`
 - `tta_hflip: false`
@@ -98,6 +102,7 @@ Inference:
 - **v12**: ConvNeXt-Small pretrained, fully frozen backbone, fast FPN/PAN adapter and standard head at 160 channels.
 - **v13**: reset to v11 ResNet50 path, add merge-NMS box fusion and class-prior bias init without increasing train/backward time.
 - **v14**: add YOLO-style BCE/sigmoid classification, late clean fine-tune, and nonzero final cosine LR on top of v13.
+- **v15**: add quality-aware class target, scale-aware objectness bias, EMA ramp, and lightweight auto-anchor evolution on top of v14.
 
 ## Important Files
 

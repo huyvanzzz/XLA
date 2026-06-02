@@ -40,6 +40,7 @@ class YoloLoss(nn.Module):
         target_offset_bias: float = 0.5,
         scale_obj_balance: list[float] | None = None,
         classification_loss: str = "ce",
+        classification_quality_mix: float = 0.0,
     ) -> None:
         super().__init__()
         self.anchors = [[(float(w), float(h)) for w, h in scale] for scale in anchors]
@@ -69,6 +70,7 @@ class YoloLoss(nn.Module):
         self.target_offset_bias = float(target_offset_bias)
         self.scale_obj_balance = [float(v) for v in scale_obj_balance] if scale_obj_balance else []
         self.classification_loss = str(classification_loss).lower()
+        self.classification_quality_mix = min(max(float(classification_quality_mix), 0.0), 1.0)
         if class_weights is not None:
             self.register_buffer("class_weights", torch.tensor(class_weights, dtype=torch.float32))
         else:
@@ -231,6 +233,7 @@ class YoloLoss(nn.Module):
                 cls_loss = cls_loss + self._classification_loss(
                     pred_cls_logit[pos_mask],
                     cls_targets[scale_idx][pos_mask],
+                    quality=ious.detach().clamp(0.0, 1.0),
                     normalizer=num_pos,
                 )
 
@@ -469,12 +472,22 @@ class YoloLoss(nn.Module):
             normalizer = loss_vec.new_tensor(float(k))
         return loss_vec.sum() / normalizer
 
-    def _classification_loss(self, logits: torch.Tensor, labels: torch.Tensor, normalizer: torch.Tensor) -> torch.Tensor:
+    def _classification_loss(
+        self,
+        logits: torch.Tensor,
+        labels: torch.Tensor,
+        quality: torch.Tensor,
+        normalizer: torch.Tensor,
+    ) -> torch.Tensor:
         if logits.numel() == 0:
             return logits.sum() * 0.0
         if self.classification_loss == "bce":
             target = logits.new_full(logits.shape, self.label_smoothing / max(self.num_classes - 1, 1))
-            target.scatter_(1, labels[:, None], 1.0 - self.label_smoothing)
+            positive = logits.new_full((logits.shape[0], 1), 1.0 - self.label_smoothing)
+            if self.classification_quality_mix > 0.0:
+                quality_target = (1.0 - self.classification_quality_mix) + self.classification_quality_mix * quality[:, None]
+                positive = positive * quality_target.to(logits.dtype)
+            target.scatter_(1, labels[:, None], positive)
             loss = F.binary_cross_entropy_with_logits(logits, target, reduction="none")
             if self.class_weights is not None:
                 loss = loss * self.class_weights.to(logits.device, logits.dtype).view(1, -1)

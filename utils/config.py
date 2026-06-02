@@ -61,6 +61,8 @@ DEFAULT_CONFIG = {
     "anchors": {
         "auto": True,
         "kmeans_iters": 40,
+        "evolve_generations": 150,
+        "anchor_threshold": 4.0,
         "per_scale": 3,
         "values": [
             [(10.0, 13.0), (16.0, 24.0), (32.0, 32.0)],
@@ -70,6 +72,7 @@ DEFAULT_CONFIG = {
     },
     "class_weights": {"enabled": True, "overrides": {"chair": 1.25}},
     "class_prior_bias": {"enabled": True, "smoothing": 1.0},
+    "objectness_bias": {"enabled": True, "nominal_objects": 8.0},
     "balanced_sampling": {"enabled": True, "power": 0.5, "empty_weight": 0.35},
     "loss_weights": {
         "box_weight": 0.0,
@@ -95,6 +98,7 @@ DEFAULT_CONFIG = {
         "noobj_hard_negative_ratio": 0.0,
         "noobj_hard_negative_min": 256,
         "classification_loss": "bce",
+        "classification_quality_mix": 0.25,
     },
     "inference": {
         "conf_threshold": 0.08,
@@ -131,6 +135,7 @@ DEFAULT_CONFIG = {
     "ema": {
         "enabled": True,
         "decay": 0.999,
+        "tau": 2000,
     },
 }
 
