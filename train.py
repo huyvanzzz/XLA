@@ -341,7 +341,7 @@ class ModelEMA:
     def __init__(self, model: TinyDetector, decay: float = 0.999, tau: int = 2000) -> None:
         self.module = deepcopy(model).eval()
         self.decay = decay
-        self.tau = max(1, int(tau))
+        self.tau = int(tau)
         self.updates = 0
         for parameter in self.module.parameters():
             parameter.requires_grad_(False)
@@ -349,7 +349,7 @@ class ModelEMA:
     @torch.no_grad()
     def update(self, model: TinyDetector) -> None:
         self.updates += 1
-        decay = self.decay * (1.0 - math.exp(-self.updates / self.tau))
+        decay = self.decay if self.tau <= 0 else self.decay * (1.0 - math.exp(-self.updates / self.tau))
         model_state = model.state_dict()
         for name, ema_value in self.module.state_dict().items():
             model_value = model_state[name].detach()
@@ -499,6 +499,7 @@ def evaluate_map(
     channels_last: bool,
     decode_style: str,
     class_activation: str,
+    quality_score_power: float,
 ) -> dict[str, float]:
     model.eval()
     predictions = []
@@ -524,6 +525,7 @@ def evaluate_map(
                 preserve_aspect=preserve_aspect,
                 decode_style=decode_style,
                 class_activation=class_activation,
+                quality_score_power=quality_score_power,
             )
             predictions.append({"image_id": str(target["image_id"]), "boxes": boxes})
 
@@ -569,6 +571,7 @@ def evaluate_map_with_optional_tuning(
                 channels_last=bool(metric_config.get("channels_last", False)),
                 decode_style=str(metric_config.get("decode_style", "standard")),
                 class_activation=str(metric_config.get("class_activation", "softmax")),
+                quality_score_power=float(metric_config.get("quality_score_power", 0.0)),
             )
             if best is None or result["map50"] > best["map50"]:
                 best = result
@@ -696,6 +699,7 @@ def main() -> None:
         scale_obj_balance=loss_weights.get("scale_obj_balance"),
         classification_loss=str(loss_weights.get("classification_loss", "ce")),
         classification_quality_mix=float(loss_weights.get("classification_quality_mix", 0.0)),
+        quality_weight=float(loss_weights.get("quality_weight", 0.0)),
     ).to(device)
     decay_backbone = []
     decay_detector = []
@@ -894,6 +898,7 @@ def main() -> None:
                 "scale_obj_balance": loss_weights.get("scale_obj_balance"),
                 "classification_loss": str(loss_weights.get("classification_loss", "ce")),
                 "classification_quality_mix": float(loss_weights.get("classification_quality_mix", 0.0)),
+                "quality_weight": float(loss_weights.get("quality_weight", 0.0)),
             },
             "lr": args.lr,
             "backbone_lr_mult": args.backbone_lr_mult,
@@ -915,6 +920,7 @@ def main() -> None:
             "class_pre_nms_topk": config["validation_metric"].get("class_pre_nms_topk", config["inference"].get("class_pre_nms_topk", 100)),
             "decode_style": config["validation_metric"].get("decode_style", config["inference"].get("decode_style", "standard")),
             "class_activation": config["validation_metric"].get("class_activation", config["inference"].get("class_activation", "softmax")),
+            "quality_score_power": config["validation_metric"].get("quality_score_power", config["inference"].get("quality_score_power", 0.0)),
         }
         if ema is not None:
             state["model"] = ema.module.state_dict()

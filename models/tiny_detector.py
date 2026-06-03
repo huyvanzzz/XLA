@@ -649,11 +649,12 @@ class DecoupledDetectionHead(nn.Module):
         dropout: float,
     ) -> None:
         super().__init__()
+        self.reg_dim = pred_dim - num_classes
         self.reg_tower = nn.Sequential(
             ConvBNAct(in_channels, head_channels, kernel_size=3),
             RepConv(head_channels),
             nn.Dropout2d(dropout) if dropout > 0 else nn.Identity(),
-            nn.Conv2d(head_channels, num_anchors * 5, kernel_size=1),
+            nn.Conv2d(head_channels, num_anchors * self.reg_dim, kernel_size=1),
         )
         self.cls_tower = nn.Sequential(
             ConvBNAct(in_channels, cls_channels, kernel_size=3),
@@ -669,9 +670,12 @@ class DecoupledDetectionHead(nn.Module):
         reg_obj = self.reg_tower(x)
         cls = self.cls_tower(x)
         n, _, h, w = reg_obj.shape
-        reg_obj = reg_obj.view(n, self.num_anchors, 5, h, w)
+        reg_obj = reg_obj.view(n, self.num_anchors, self.reg_dim, h, w)
         cls = cls.view(n, self.num_anchors, self.num_classes, h, w)
-        y = torch.cat([reg_obj, cls], dim=2)
+        if self.reg_dim > 5:
+            y = torch.cat([reg_obj[:, :, :5], cls, reg_obj[:, :, 5:]], dim=2)
+        else:
+            y = torch.cat([reg_obj, cls], dim=2)
         return y.permute(0, 3, 4, 1, 2).contiguous()
 
     def initialize_biases(self, objectness_prior: float = 0.01) -> None:
@@ -679,7 +683,7 @@ class DecoupledDetectionHead(nn.Module):
         final_cls = self.cls_tower[-1]
         if isinstance(final_reg, nn.Conv2d) and final_reg.bias is not None:
             prior = min(max(float(objectness_prior), 1e-4), 1.0 - 1e-4)
-            bias = final_reg.bias.view(self.num_anchors, 5)
+            bias = final_reg.bias.view(self.num_anchors, self.reg_dim)
             with torch.no_grad():
                 bias[:, 4].fill_(math.log(prior / (1.0 - prior)))
         if isinstance(final_cls, nn.Conv2d) and final_cls.bias is not None:
@@ -699,7 +703,7 @@ class DecoupledDetectionHead(nn.Module):
         final_reg = self.reg_tower[-1]
         if not isinstance(final_reg, nn.Conv2d) or final_reg.bias is None:
             return
-        bias = final_reg.bias.view(self.num_anchors, 5)
+        bias = final_reg.bias.view(self.num_anchors, self.reg_dim)
         with torch.no_grad():
             bias[:, 4].fill_(float(objectness_logit))
 
@@ -725,11 +729,14 @@ class TinyDetector(nn.Module):
         head_type: str = "standard",
         backbone: str = "resnet50",
         pretrained: bool = True,
+        quality_head: bool = False,
         **_: object,
     ) -> None:
         super().__init__()
         self.num_classes = num_classes
-        self.pred_dim = 5 + num_classes
+        self.quality_head = bool(quality_head)
+        self.quality_index = 5 + num_classes if self.quality_head else None
+        self.pred_dim = 5 + num_classes + (1 if self.quality_head else 0)
         if isinstance(num_anchors, int):
             self.num_anchors = [num_anchors, num_anchors, num_anchors]
         else:

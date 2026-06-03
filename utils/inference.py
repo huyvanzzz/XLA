@@ -54,6 +54,7 @@ def decode_predictions(
     preserve_aspect: bool = True,
     decode_style: str = "standard",
     class_activation: str = "softmax",
+    quality_score_power: float = 0.0,
 ) -> list[dict[str, object]]:
     if isinstance(pred, dict):
         preds = pred["main"]
@@ -81,6 +82,7 @@ def decode_predictions(
             preserve_aspect=preserve_aspect,
             decode_style=decode_style,
             class_activation=class_activation,
+            quality_score_power=quality_score_power,
         )
         all_boxes.append(boxes)
         all_scores.append(scores)
@@ -224,6 +226,7 @@ def _decode_scale(
     preserve_aspect: bool = True,
     decode_style: str = "standard",
     class_activation: str = "softmax",
+    quality_score_power: float = 0.0,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     device = pred.device
     grid_h, grid_w, num_anchors, _ = pred.shape
@@ -261,11 +264,16 @@ def _decode_scale(
     ).reshape(-1, 4)
 
     object_scores = pred[..., 4].sigmoid().reshape(-1)
+    class_logits = pred[..., 5 : 5 + len(classes)]
     if class_activation == "sigmoid":
-        class_scores, labels = pred[..., 5:].sigmoid().reshape(-1, len(classes)).max(dim=1)
+        class_scores, labels = class_logits.sigmoid().reshape(-1, len(classes)).max(dim=1)
     else:
-        class_scores, labels = pred[..., 5:].softmax(dim=-1).reshape(-1, len(classes)).max(dim=1)
+        class_scores, labels = class_logits.softmax(dim=-1).reshape(-1, len(classes)).max(dim=1)
     scores = object_scores * class_scores
+    quality_index = 5 + len(classes)
+    if quality_score_power > 0.0 and pred.shape[-1] > quality_index:
+        quality_scores = pred[..., quality_index].sigmoid().reshape(-1)
+        scores = scores * quality_scores.clamp(min=1e-6).pow(float(quality_score_power))
 
     if preserve_aspect:
         scale = min(image_size / orig_width, image_size / orig_height)

@@ -33,6 +33,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--class_pre_nms_topk", type=int)
     parser.add_argument("--decode_style", choices=["standard", "yolov7"])
     parser.add_argument("--class_activation", choices=["softmax", "sigmoid"])
+    parser.add_argument("--quality_score_power", type=float)
     parser.add_argument("--batch_size", type=int, default=16)
     return parser.parse_args()
 
@@ -40,7 +41,7 @@ def parse_args() -> argparse.Namespace:
 def apply_config(args: argparse.Namespace) -> argparse.Namespace:
     config = load_config(args.config)
     inference = config["inference"]
-    for name in ["conf_threshold", "nms_threshold", "nms_type", "merge_nms", "max_detections", "pre_nms_topk", "class_pre_nms_topk", "decode_style", "class_activation"]:
+    for name in ["conf_threshold", "nms_threshold", "nms_type", "merge_nms", "max_detections", "pre_nms_topk", "class_pre_nms_topk", "decode_style", "class_activation", "quality_score_power"]:
         if getattr(args, name) is None:
             setattr(args, name, inference[name])
     return args
@@ -53,6 +54,7 @@ def main() -> None:
     cli_merge_nms = args.merge_nms
     cli_decode_style = args.decode_style
     cli_class_activation = args.class_activation
+    cli_quality_score_power = args.quality_score_power
     args = apply_config(args)
     image_dir = Path(args.image_dir)
     checkpoint_path = Path(args.checkpoint)
@@ -79,6 +81,8 @@ def main() -> None:
         args.decode_style = checkpoint.get("decode_style", checkpoint.get("loss_weights", {}).get("decode_style", args.decode_style))
     if cli_class_activation is None:
         args.class_activation = checkpoint.get("class_activation", args.class_activation)
+    if cli_quality_score_power is None:
+        args.quality_score_power = checkpoint.get("quality_score_power", args.quality_score_power)
     tta_hflip = bool(config["inference"].get("tta_hflip", False))
 
     model = TinyDetector(num_classes=len(classes), num_anchors=[len(scale) for scale in anchors], **model_config).to(device)
@@ -128,6 +132,7 @@ def main() -> None:
                     preserve_aspect=preserve_aspect,
                     decode_style=args.decode_style,
                     class_activation=args.class_activation,
+                    quality_score_power=float(args.quality_score_power),
                 )
                 if pred_flip is not None:
                     flip_boxes = decode_predictions(
@@ -148,6 +153,7 @@ def main() -> None:
                         preserve_aspect=preserve_aspect,
                         decode_style=args.decode_style,
                         class_activation=args.class_activation,
+                        quality_score_power=float(args.quality_score_power),
                     )
                     boxes = merge_detections(
                         boxes + flip_detections_horizontally(flip_boxes, orig_w),

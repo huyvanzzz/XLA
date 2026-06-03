@@ -57,11 +57,12 @@ DEFAULT_CONFIG = {
         "aux_head_close_epoch": 30,
         "decoupled_head": False,
         "cls_head_channels": 128,
+        "quality_head": True,
     },
     "anchors": {
         "auto": True,
         "kmeans_iters": 40,
-        "evolve_generations": 150,
+        "evolve_generations": 0,
         "anchor_threshold": 4.0,
         "per_scale": 3,
         "values": [
@@ -72,7 +73,7 @@ DEFAULT_CONFIG = {
     },
     "class_weights": {"enabled": True, "overrides": {"chair": 1.25}},
     "class_prior_bias": {"enabled": True, "smoothing": 1.0},
-    "objectness_bias": {"enabled": True, "nominal_objects": 8.0},
+    "objectness_bias": {"enabled": False, "nominal_objects": 8.0},
     "balanced_sampling": {"enabled": True, "power": 0.5, "empty_weight": 0.35},
     "loss_weights": {
         "box_weight": 0.0,
@@ -98,7 +99,8 @@ DEFAULT_CONFIG = {
         "noobj_hard_negative_ratio": 0.0,
         "noobj_hard_negative_min": 256,
         "classification_loss": "bce",
-        "classification_quality_mix": 0.25,
+        "classification_quality_mix": 0.0,
+        "quality_weight": 0.35,
     },
     "inference": {
         "conf_threshold": 0.08,
@@ -112,6 +114,7 @@ DEFAULT_CONFIG = {
         "class_pre_nms_topk": 100,
         "decode_style": "yolov7",
         "class_activation": "sigmoid",
+        "quality_score_power": 0.5,
     },
     "validation_metric": {
         "enabled": True,
@@ -127,6 +130,7 @@ DEFAULT_CONFIG = {
         "class_pre_nms_topk": 100,
         "decode_style": "yolov7",
         "class_activation": "sigmoid",
+        "quality_score_power": 0.5,
         "tune": False,
         "tune_every": 5,
         "conf_thresholds": [0.08, 0.1, 0.12, 0.15],
@@ -135,7 +139,7 @@ DEFAULT_CONFIG = {
     "ema": {
         "enabled": True,
         "decay": 0.999,
-        "tau": 2000,
+        "tau": 0,
     },
 }
 

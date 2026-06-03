@@ -545,3 +545,41 @@ Ket qua:
 - Tong epoch train:
 - Epoch tot nhat:
 - Ghi chu:
+
+Trang thai:
+- User bao phien ban hien tai khong tot, khong nen tiep tuc huong v15.
+- Cac phan rui ro can reset: `classification_quality_mix`, objectness bias, anchor evolution, EMA ramp.
+
+## v16_quality_prediction_head
+
+Ngay:
+
+Mo ta:
+- Doi huong rong hon sau khi v15 khong tot.
+- Reset cac phan rui ro cua v15: `classification_quality_mix: 0.0`, `objectness_bias.enabled: false`, `anchors.evolve_generations: 0`, `ema.tau: 0`.
+- Giu nen da tot cua v14: ResNet50 pretrained, YOLOv7 PAN, YOLOv7 decode/loss core, BCE/sigmoid class path, late clean fine-tune, merge-NMS, class-prior bias.
+- Them quality prediction head: moi anchor them 1 logit du doan bbox quality/IoU.
+- Loss moi `quality_weight: 0.35`: quality logit hoc target la IoU cua positive bbox.
+- Inference dung score moi: `score = objectness * class_score * quality^0.5`.
+- Muc tieu: cai thien ranking cua prediction theo chat luong bbox, giam truong hop confidence cao nhung box kem, ma chi tang 1 output channel/anchor nen train time gan nhu khong tang.
+- Huong nay dua tren logic quality-aware detection cua YOLOv6/GFL/QFL, nhung tu cai cuc bo va khong dung framework/model co san.
+
+Config chinh:
+- `model.quality_head: true`
+- `loss_weights.quality_weight: 0.35`
+- `inference.quality_score_power: 0.5`
+- `validation_metric.quality_score_power: 0.5`
+- `loss_weights.classification_quality_mix: 0.0`
+- `objectness_bias.enabled: false`
+- `anchors.evolve_generations: 0`
+- `ema.tau: 0`
+
+Ket qua:
+- mAP@0.5:
+- Precision:
+- Recall:
+- Thoi gian train/epoch:
+- Thoi gian mAP validation:
+- Tong epoch train:
+- Epoch tot nhat:
+- Ghi chu:

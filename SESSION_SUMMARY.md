@@ -83,7 +83,7 @@ Xem chi tiet trong `EXPERIMENTS.md`.
 - v2/v3: direct resize 512, train nhanh hon; user bao v3 len khoang `0.615`, train/epoch khoang `4'30`, best gan epoch 60.
 - v4: hard-negative + mosaic + TTA, ket qua rat te; da reset/tat.
 - v5: Task-Aligned Assignment + Decoupled Detection Head + tat aux head tu epoch 30. Bi reset vi train lau va khong on.
-- Hien tai active: v15 dua tren v14. ResNet50 pretrained + YOLOv7-style PAN/decode/loss core, BCE/sigmoid class path, merge-NMS, class-prior bias, late clean fine-tune. Them quality-aware class target, scale-aware objectness bias, EMA ramp, va auto-anchor evolution nhe. Muc tieu la tang mAP ma khong tang thoi gian train moi epoch.
+- Hien tai active: v16 dua tren v14 sau khi user bao v15 khong tot. ResNet50 pretrained + YOLOv7-style PAN/decode/loss core, BCE/sigmoid class path, merge-NMS, class-prior bias, late clean fine-tune. Reset cac phan rui ro cua v15 va them quality prediction head rieng de ranking box theo IoU quality.
 
 ## Ly do reset ve v3
 
@@ -141,6 +141,13 @@ V15 cai tien tiep sau khi user bao v14 dat 73.5:
 - auto anchors them `evolve_generations: 150` va ratio fitness nhe;
 - cac thay doi nay khong them compute forward/backward moi batch, chi them init/pre-train hoac dung gia tri da tinh trong loss.
 
+V16 la huong moi sau khi v15 khong tot:
+- reset `classification_quality_mix: 0.0`, `objectness_bias.enabled: false`, `anchors.evolve_generations: 0`, `ema.tau: 0`;
+- them `model.quality_head: true`, moi anchor them 1 quality logit;
+- `loss_weights.quality_weight: 0.35`, target quality la IoU cua positive bbox;
+- inference dung `quality_score_power: 0.5`, score = obj * class * quality^0.5;
+- tang output tu 10 len 11 value/anchor, chi tang rat nhe o conv cuoi, khong doi backbone/neck.
+
 Neu tiep tuc cai tien, uu tien cac huong khong tang thoi gian train:
 - post-processing / per-class threshold sau train;
 - DIoU-NMS dang duoc bat mac dinh vi khong tang train time;
@@ -167,7 +174,7 @@ Neu tiep tuc cai tien, uu tien cac huong khong tang thoi gian train:
 
 Thu tu nen lam:
 
-1. Train/evaluate active v15 truoc, ghi mAP/precision/recall/time vao `EXPERIMENTS.md`.
+1. Train/evaluate active v16 truoc, ghi mAP/precision/recall/time vao `EXPERIMENTS.md`.
 2. Neu can cai tien ma khong tang train time: lam post-hoc threshold/NMS per class sau train, hoac sua predict/evaluate pipeline.
 3. Neu can sua model/loss: chi them cai co chi phi gan nhu bang 0; khong quay lai task-aligned/decoupled neu user khong chap nhan train cham.
 4. Neu precision van qua thap: xem per-class predictions, dac biet `chair`; can nhac post-hoc class threshold tuning ngoai train, khong bat grid trong train.

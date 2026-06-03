@@ -41,6 +41,7 @@ class YoloLoss(nn.Module):
         scale_obj_balance: list[float] | None = None,
         classification_loss: str = "ce",
         classification_quality_mix: float = 0.0,
+        quality_weight: float = 0.0,
     ) -> None:
         super().__init__()
         self.anchors = [[(float(w), float(h)) for w, h in scale] for scale in anchors]
@@ -71,6 +72,7 @@ class YoloLoss(nn.Module):
         self.scale_obj_balance = [float(v) for v in scale_obj_balance] if scale_obj_balance else []
         self.classification_loss = str(classification_loss).lower()
         self.classification_quality_mix = min(max(float(classification_quality_mix), 0.0), 1.0)
+        self.quality_weight = max(float(quality_weight), 0.0)
         if class_weights is not None:
             self.register_buffer("class_weights", torch.tensor(class_weights, dtype=torch.float32))
         else:
@@ -188,6 +190,7 @@ class YoloLoss(nn.Module):
         box_loss = preds[0].sum() * 0.0
         iou_loss = preds[0].sum() * 0.0
         cls_loss = preds[0].sum() * 0.0
+        quality_loss = preds[0].sum() * 0.0
         obj_loss = preds[0].sum() * 0.0
         noobj_loss = preds[0].sum() * 0.0
         total_pos = torch.tensor(0.0, device=device)
@@ -207,7 +210,8 @@ class YoloLoss(nn.Module):
                 pred_xy = pred[..., 0:2].sigmoid()
                 pred_wh = pred[..., 2:4]
             pred_obj_logit = pred[..., 4]
-            pred_cls_logit = pred[..., 5:]
+            pred_cls_logit = pred[..., 5 : 5 + self.num_classes]
+            pred_quality_logit = pred[..., 5 + self.num_classes] if pred.shape[-1] > 5 + self.num_classes else None
             balance = self.scale_obj_balance[scale_idx] if scale_idx < len(self.scale_obj_balance) else 1.0
 
             if pos_mask.any():
@@ -236,6 +240,12 @@ class YoloLoss(nn.Module):
                     quality=ious.detach().clamp(0.0, 1.0),
                     normalizer=num_pos,
                 )
+                if pred_quality_logit is not None and self.quality_weight > 0.0:
+                    quality_loss = quality_loss + F.binary_cross_entropy_with_logits(
+                        pred_quality_logit[pos_mask],
+                        ious.detach().clamp(0.0, 1.0),
+                        reduction="sum",
+                    ) / num_pos
 
             obj_loss = obj_loss + balance * self._objectness_loss(
                 pred_obj_logit[pos_mask],
@@ -254,6 +264,7 @@ class YoloLoss(nn.Module):
         box_loss = box_loss / num_scales
         iou_loss = iou_loss / num_scales
         cls_loss = cls_loss / num_scales
+        quality_loss = quality_loss / num_scales
         obj_loss = obj_loss / num_scales
         noobj_loss = noobj_loss / num_scales
         total = (
@@ -262,6 +273,7 @@ class YoloLoss(nn.Module):
             + self.obj_weight * obj_loss
             + self.noobj_weight * noobj_loss
             + self.cls_weight * cls_loss
+            + self.quality_weight * quality_loss
         )
         logs = {
             "loss": float(total.detach().cpu()),
@@ -270,6 +282,7 @@ class YoloLoss(nn.Module):
             "obj_loss": float(obj_loss.detach().cpu()),
             "noobj_loss": float(noobj_loss.detach().cpu()),
             "cls_loss": float(cls_loss.detach().cpu()),
+            "quality_loss": float(quality_loss.detach().cpu()),
             "num_pos": float(total_pos.detach().cpu()),
         }
         return total, logs
@@ -347,7 +360,7 @@ class YoloLoss(nn.Module):
 
             decoded = self._decode_boxes(pred, anchors_by_scale[scale_idx]).reshape(batch_size, -1, 4)
             object_scores = pred[..., 4].sigmoid()
-            class_scores = pred[..., 5:].softmax(dim=-1)
+            class_scores = pred[..., 5 : 5 + self.num_classes].softmax(dim=-1)
             scores = (object_scores[..., None] * class_scores).reshape(batch_size, -1, self.num_classes)
 
             flat_boxes.append(decoded)
