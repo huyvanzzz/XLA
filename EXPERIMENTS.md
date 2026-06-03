@@ -537,7 +537,7 @@ Config chinh:
 - `merge_nms: true`
 
 Ket qua:
-- mAP@0.5:
+- mAP@0.5: 72.06
 - Precision:
 - Recall:
 - Thoi gian train/epoch:
