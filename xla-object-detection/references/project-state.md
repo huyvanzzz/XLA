@@ -27,7 +27,7 @@
 - mAP validation and best checkpoint start at epoch 30.
 - Only log versions in `EXPERIMENTS.md` when they are intended to be trained/evaluated.
 
-## Active v16 Summary
+## Active v17 Summary
 
 Config file: `configs/default.yaml`.
 
@@ -47,6 +47,7 @@ Model:
 - `backbone: resnet50`
 - `pretrained: true`
 - `neck_type: yolov7_pan`
+- `neck_attention: eca`
 - `head_type: standard`
 - `neck_channels: 192`
 - `head_channels: 192`
@@ -55,7 +56,7 @@ Model:
 - `aux_head: true`
 - `aux_head_close_epoch: 30`
 - `decoupled_head: false`
-- `quality_head: true`
+- `quality_head: false`
 
 Loss/assignment:
 
@@ -65,7 +66,7 @@ Loss/assignment:
 - `target_offsets: true`
 - `classification_loss: bce`
 - `classification_quality_mix: 0.0`
-- `quality_weight: 0.35`
+- `quality_weight: 0.0`
 - `target_offset_bias: 0.5`
 - `scale_obj_balance: [4.0, 1.0, 0.4]`
 - `objectness_iou_mix: 1.0`
@@ -79,10 +80,12 @@ Inference:
 - `nms_threshold: 0.5`
 - `nms_type: diou`
 - `merge_nms: true`
+- `inference.tta_hflip: true`
+- `validation_metric.tta_hflip: false`
 - `decode_style: yolov7`
 - `class_prior_bias.enabled: true`
 - `class_activation: sigmoid`
-- `quality_score_power: 0.5`
+- `quality_score_power: 0.0`
 - `objectness_bias.enabled: false`
 - `ema.tau: 0`
 - `anchors.evolve_generations: 0`
@@ -107,6 +110,7 @@ Inference:
 - **v14**: add YOLO-style BCE/sigmoid classification, late clean fine-tune, and nonzero final cosine LR on top of v13.
 - **v15**: add quality-aware class target, scale-aware objectness bias, EMA ramp, and lightweight auto-anchor evolution on top of v14.
 - **v16**: reset risky v15 pieces and add a separate bbox-quality prediction head for score ranking.
+- **v17**: disable quality head after v16 underperformed, add lightweight ECA neck attention and final-inference hflip TTA.
 
 ## Important Files
 

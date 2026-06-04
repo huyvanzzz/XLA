@@ -247,10 +247,25 @@ class YoloV7Downsample(nn.Module):
         return self.out(torch.cat([conved, pooled], dim=1))
 
 
+class ECAAttention(nn.Module):
+    """Efficient channel attention with negligible cost for neck outputs."""
+
+    def __init__(self, channels: int, kernel_size: int = 3) -> None:
+        super().__init__()
+        padding = kernel_size // 2
+        self.pool = nn.AdaptiveAvgPool2d(1)
+        self.conv = nn.Conv1d(1, 1, kernel_size=kernel_size, padding=padding, bias=False)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        weights = self.pool(x).squeeze(-1).transpose(1, 2)
+        weights = self.conv(weights).transpose(1, 2).unsqueeze(-1).sigmoid()
+        return x * weights
+
+
 class YoloV7PANNeck(nn.Module):
     """YOLOv7-style SPPCSPC + ELAN FPN/PAN neck adapted to pretrained backbones."""
 
-    def __init__(self, in_channels: list[int], out_channels: int = 192) -> None:
+    def __init__(self, in_channels: list[int], out_channels: int = 192, attention: str = "none") -> None:
         super().__init__()
         self.lateral3 = ConvBNAct(in_channels[0], out_channels, kernel_size=1)
         self.lateral4 = ConvBNAct(in_channels[1], out_channels, kernel_size=1)
@@ -262,6 +277,10 @@ class YoloV7PANNeck(nn.Module):
         self.pan4 = YoloV7ELANFusion(out_channels * 2, out_channels)
         self.down4 = YoloV7Downsample(out_channels)
         self.pan5 = YoloV7ELANFusion(out_channels * 2, out_channels)
+        if attention == "eca":
+            self.output_attention = nn.ModuleList([ECAAttention(out_channels) for _ in range(3)])
+        else:
+            self.output_attention = nn.ModuleList([nn.Identity() for _ in range(3)])
 
     def forward(self, features: tuple[torch.Tensor, torch.Tensor, torch.Tensor]) -> list[torch.Tensor]:
         p3, p4, p5 = features
@@ -278,7 +297,7 @@ class YoloV7PANNeck(nn.Module):
         p4_out = self.pan4(torch.cat([p4_td, p3_down], dim=1))
         p4_down = self.down4(p4_out)
         p5_out = self.pan5(torch.cat([p5, p4_down], dim=1))
-        return [p3_out, p4_out, p5_out]
+        return [attn(feature) for attn, feature in zip(self.output_attention, [p3_out, p4_out, p5_out])]
 
 
 class LargeKernelBlock(nn.Module):
@@ -726,6 +745,7 @@ class TinyDetector(nn.Module):
         decoupled_head: bool = False,
         cls_head_channels: int | None = None,
         neck_type: str = "fpnpan",
+        neck_attention: str = "none",
         head_type: str = "standard",
         backbone: str = "resnet50",
         pretrained: bool = True,
@@ -770,7 +790,7 @@ class TinyDetector(nn.Module):
             raise ValueError(f"Unsupported backbone: {backbone}")
         self.backbone_name = backbone
         if neck_type == "yolov7_pan":
-            self.neck = YoloV7PANNeck(feature_channels, out_channels=neck_channels)
+            self.neck = YoloV7PANNeck(feature_channels, out_channels=neck_channels, attention=str(neck_attention))
         elif neck_type == "convnext_pan":
             self.neck = ConvNeXtPANNeck(feature_channels, out_channels=neck_channels, depth=max(1, elan_depth))
         else:

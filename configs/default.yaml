@@ -48,12 +48,13 @@ model:
   dropout: 0.1
   elan_depth: 1
   neck_type: yolov7_pan
+  neck_attention: eca
   head_type: standard
   aux_head: true
   aux_head_close_epoch: 30
   decoupled_head: false
   cls_head_channels: 128
-  quality_head: true
+  quality_head: false
 
 anchors:
   auto: true
@@ -109,12 +110,12 @@ loss_weights:
   noobj_hard_negative_min: 256
   classification_loss: bce
   classification_quality_mix: 0.0
-  quality_weight: 0.35
+  quality_weight: 0.0
 
 inference:
   conf_threshold: 0.08
   class_conf_thresholds: {}
-  tta_hflip: false
+  tta_hflip: true
   nms_threshold: 0.5
   nms_type: diou
   merge_nms: true
@@ -123,7 +124,7 @@ inference:
   class_pre_nms_topk: 100
   decode_style: yolov7
   class_activation: sigmoid
-  quality_score_power: 0.5
+  quality_score_power: 0.0
 
 validation_metric:
   enabled: true
@@ -139,7 +140,7 @@ validation_metric:
   class_pre_nms_topk: 100
   decode_style: yolov7
   class_activation: sigmoid
-  quality_score_power: 0.5
+  quality_score_power: 0.0
   tune: false
   tune_every: 5
   conf_thresholds: [0.08, 0.1, 0.12, 0.15]

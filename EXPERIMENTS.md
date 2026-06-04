@@ -575,11 +575,48 @@ Config chinh:
 - `ema.tau: 0`
 
 Ket qua:
+- mAP@0.5: 73.17
+- Precision:
+- Recall:
+- Thoi gian train/epoch:
+- Thoi gian mAP validation:
+- Tong epoch train:
+- Epoch tot nhat:
+- Ghi chu:
+
+Trang thai:
+- User bao v16 van thua v14, chi duoc 73.17.
+- Khong tiep tuc quality head cho active config.
+
+## v17_v14_eca_neck_tta
+
+Ngay:
+
+Mo ta:
+- Doi huong sau khi v16 thua v14.
+- Reset active config ve gan v14: tat `quality_head`, `quality_weight`, `quality_score_power`.
+- Giu ResNet50 pretrained + YOLOv7 PAN + BCE/sigmoid + late clean fine-tune + merge-NMS + class-prior bias.
+- Them ECA channel attention rat nhe vao 3 output scale cua YOLOv7 PAN neck.
+- Y tuong dua theo huong YOLOv12/attention-centric nhung dung attention sieu nhe, khong dung transformer/PSA nang.
+- Bat hflip TTA chi trong `predict.py`/inference (`inference.tta_hflip: true`), khong bat trong train validation (`validation_metric.tta_hflip: false`) de khong lam train map cham.
+- Muc tieu: tang kha nang chon kenh feature va tang final mAP bang test-time augmentation, trong khi train/epoch chi tang rat nhe do ECA va validation train khong TTA.
+
+Config chinh:
+- `model.quality_head: false`
+- `model.neck_attention: eca`
+- `loss_weights.quality_weight: 0.0`
+- `inference.quality_score_power: 0.0`
+- `inference.tta_hflip: true`
+- `validation_metric.tta_hflip: false`
+- `merge_nms: true`
+
+Ket qua:
 - mAP@0.5:
 - Precision:
 - Recall:
 - Thoi gian train/epoch:
 - Thoi gian mAP validation:
+- Thoi gian predict/evaluate final:
 - Tong epoch train:
 - Epoch tot nhat:
 - Ghi chu:
