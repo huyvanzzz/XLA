@@ -27,25 +27,28 @@ validation_loss:
 augmentation:
   mosaic_prob: 0.0
   close_mosaic_epoch: 55
-  random_crop_prob: 0.2
+  random_crop_prob: 0.25
   min_crop_scale: 0.8
-  random_scale_prob: 0.45
+  random_scale_prob: 0.5
   min_scale: 0.75
   max_scale: 1.25
-  random_erasing_prob: 0.25
+  random_erasing_prob: 0.2
   random_erasing_min_area: 0.02
-  random_erasing_max_area: 0.12
+  random_erasing_max_area: 0.1
+  color_jitter_prob: 0.35
+  color_jitter_min: 0.7
+  color_jitter_max: 1.3
   close_strong_aug_epoch: 55
 
 model:
   backbone: resnet50
   pretrained: true
   base_channels: 40
-  head_channels: 192
-  neck_channels: 192
+  head_channels: 208
+  neck_channels: 208
   attention_heads: 0
   objectness_prior: 0.01
-  dropout: 0.1
+  dropout: 0.12
   elan_depth: 1
   neck_type: yolov7_pan
   neck_attention: eca
@@ -53,7 +56,7 @@ model:
   aux_head: true
   aux_head_close_epoch: 30
   decoupled_head: false
-  cls_head_channels: 128
+  cls_head_channels: 144
   quality_head: false
 
 anchors:

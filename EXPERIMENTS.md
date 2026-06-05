@@ -620,3 +620,37 @@ Ket qua:
 - Tong epoch train:
 - Epoch tot nhat:
 - Ghi chu:
+
+## v18_v17_slight_capacity_aug
+
+Ngay:
+
+Mo ta:
+- Giu nguyen y tuong v17: ResNet50 pretrained, YOLOv7 PAN, ECA neck attention, BCE/sigmoid, merge-NMS, DIoU-NMS, hflip TTA chi cho final inference.
+- Tang tham so nhe o detector neck/head, khong doi backbone: `neck_channels/head_channels` tu 192 len 208, `cls_head_channels` tu 128 len 144.
+- Tang dropout tu 0.10 len 0.12 de bu lai rui ro overfit khi head/neck lon hon.
+- Augmentation tang nhe nhung van tranh mosaic/letterbox: crop/scale xac suat cao hon mot chut, random erasing nhe hon, color jitter configurable va rong hon.
+- Muc tieu: tang suc bieu dien cua phan detector ma khong lam train cham manh nhu doi backbone, task-aligned assignment, decoupled head, hay TTA trong validation.
+
+Config chinh:
+- `model.neck_channels: 208`
+- `model.head_channels: 208`
+- `model.cls_head_channels: 144`
+- `model.dropout: 0.12`
+- `augmentation.random_crop_prob: 0.25`
+- `augmentation.random_scale_prob: 0.5`
+- `augmentation.random_erasing_prob: 0.2`
+- `augmentation.random_erasing_max_area: 0.1`
+- `augmentation.color_jitter_prob: 0.35`
+- `augmentation.color_jitter_min/max: 0.7/1.3`
+
+Ket qua:
+- mAP@0.5:
+- Precision:
+- Recall:
+- Thoi gian train/epoch:
+- Thoi gian mAP validation:
+- Thoi gian predict/evaluate final:
+- Tong epoch train:
+- Epoch tot nhat:
+- Ghi chu:

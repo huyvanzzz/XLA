@@ -165,12 +165,15 @@ class DetectionDataset(Dataset):
                 boxes[:, 0] = width - old_x2
                 boxes[:, 2] = width - old_x1
 
-        if random.random() < 0.3:
-            image = ImageEnhance.Color(image).enhance(random.uniform(0.75, 1.25))
-        if random.random() < 0.3:
-            image = ImageEnhance.Brightness(image).enhance(random.uniform(0.75, 1.25))
-        if random.random() < 0.3:
-            image = ImageEnhance.Contrast(image).enhance(random.uniform(0.75, 1.25))
+        jitter_prob = float(self.augment_config.get("color_jitter_prob", 0.3))
+        jitter_min = float(self.augment_config.get("color_jitter_min", 0.75))
+        jitter_max = float(self.augment_config.get("color_jitter_max", 1.25))
+        if random.random() < jitter_prob:
+            image = ImageEnhance.Color(image).enhance(random.uniform(jitter_min, jitter_max))
+        if random.random() < jitter_prob:
+            image = ImageEnhance.Brightness(image).enhance(random.uniform(jitter_min, jitter_max))
+        if random.random() < jitter_prob:
+            image = ImageEnhance.Contrast(image).enhance(random.uniform(jitter_min, jitter_max))
         return image, boxes, labels
 
     def _random_scale(self, image: Image.Image, boxes: torch.Tensor) -> tuple[Image.Image, torch.Tensor]:
