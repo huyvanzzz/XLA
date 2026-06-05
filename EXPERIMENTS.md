@@ -621,7 +621,7 @@ Ket qua:
 - Epoch tot nhat:
 - Ghi chu:
 
-## v18_v17_slight_capacity_aug
+## _v17_slight_capacity_aug
 
 Ngay:
 
