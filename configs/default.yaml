@@ -3,7 +3,7 @@ preserve_aspect: false
 multi_scale:
   enabled: false
 epochs: 80
-batch_size: 16
+batch_size: 24
 val_batch_size: 48
 lr: 0.0001
 lr_final_factor: 0.05
@@ -44,11 +44,11 @@ model:
   backbone: convnext_small
   pretrained: true
   base_channels: 40
-  head_channels: 176
-  neck_channels: 176
+  head_channels: 192
+  neck_channels: 192
   attention_heads: 0
   objectness_prior: 0.01
-  dropout: 0.1
+  dropout: 0.12
   elan_depth: 1
   neck_type: convnext_fast_pan
   neck_attention: eca
@@ -57,7 +57,7 @@ model:
   aux_head: true
   aux_head_close_epoch: 30
   decoupled_head: false
-  cls_head_channels: 80
+  cls_head_channels: 96
   quality_head: false
 
 anchors:
