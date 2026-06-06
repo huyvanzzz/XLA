@@ -438,6 +438,38 @@ Ket qua:
 - Epoch tot nhat:
 - Ghi chu:
 
+## v21_convnext_fast_pan_lite
+
+Ngay:
+
+Mo ta:
+- Giam nhe do nang cua v20 sau khi user bao train khoang 10 phut/epoch va muon xuong gan 9 phut/epoch.
+- Giu ConvNeXt-Small pretrained va cau truc `convnext_fast_pan + efficient_decoupled`, khong doi y tuong kien truc.
+- Giam detector adapter: `neck_channels/head_channels` 192 -> 176, `cls_head_channels` 96 -> 80.
+- Giam dropout 0.12 -> 0.10 vi model nho hon can it regularization hon.
+- Muc tieu: giam compute/VRAM cua neck/head mot chut, hy vong tiet kiem khoang 10% thoi gian epoch ma khong lam mat qua nhieu mAP.
+
+Config chinh:
+- `model.backbone: convnext_small`
+- `model.neck_type: convnext_fast_pan`
+- `model.head_type: efficient_decoupled`
+- `model.neck_channels: 176`
+- `model.head_channels: 176`
+- `model.cls_head_channels: 80`
+- `model.dropout: 0.10`
+- `batch_size: 16`
+
+Ket qua:
+- mAP@0.5:
+- Precision:
+- Recall:
+- Thoi gian train/epoch:
+- Thoi gian mAP validation:
+- Thoi gian predict/evaluate final:
+- Tong epoch train:
+- Epoch tot nhat:
+- Ghi chu:
+
 ## v13_resnet50_v11_merge_nms
 
 Ngay:
