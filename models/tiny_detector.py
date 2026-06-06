@@ -262,6 +262,43 @@ class ECAAttention(nn.Module):
         return x * weights
 
 
+class SpatialAttention(nn.Module):
+    """Cheap spatial attention from channel average/max maps."""
+
+    def __init__(self, kernel_size: int = 7) -> None:
+        super().__init__()
+        padding = kernel_size // 2
+        self.conv = nn.Conv2d(2, 1, kernel_size=kernel_size, padding=padding, bias=False)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        avg_map = x.mean(dim=1, keepdim=True)
+        max_map = x.amax(dim=1, keepdim=True)
+        weights = self.conv(torch.cat([avg_map, max_map], dim=1)).sigmoid()
+        return x * weights
+
+
+class ChannelSpatialAttention(nn.Module):
+    """ECA channel attention followed by lightweight spatial attention."""
+
+    def __init__(self, channels: int) -> None:
+        super().__init__()
+        self.channel = ECAAttention(channels)
+        self.spatial = SpatialAttention(kernel_size=7)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.spatial(self.channel(x))
+
+
+def build_attention(channels: int, attention: str) -> nn.Module:
+    if attention == "eca":
+        return ECAAttention(channels)
+    if attention == "spatial":
+        return SpatialAttention(kernel_size=7)
+    if attention in {"eca_spatial", "cbam_lite"}:
+        return ChannelSpatialAttention(channels)
+    return nn.Identity()
+
+
 class YoloV7PANNeck(nn.Module):
     """YOLOv7-style SPPCSPC + ELAN FPN/PAN neck adapted to pretrained backbones."""
 
@@ -277,10 +314,7 @@ class YoloV7PANNeck(nn.Module):
         self.pan4 = YoloV7ELANFusion(out_channels * 2, out_channels)
         self.down4 = YoloV7Downsample(out_channels)
         self.pan5 = YoloV7ELANFusion(out_channels * 2, out_channels)
-        if attention == "eca":
-            self.output_attention = nn.ModuleList([ECAAttention(out_channels) for _ in range(3)])
-        else:
-            self.output_attention = nn.ModuleList([nn.Identity() for _ in range(3)])
+        self.output_attention = nn.ModuleList([build_attention(out_channels, attention) for _ in range(3)])
 
     def forward(self, features: tuple[torch.Tensor, torch.Tensor, torch.Tensor]) -> list[torch.Tensor]:
         p3, p4, p5 = features
@@ -401,7 +435,7 @@ class FastConvNeXtFusionBlock(nn.Module):
             nn.Conv2d(hidden, channels, kernel_size=1, bias=False),
             nn.BatchNorm2d(channels),
         )
-        self.attn = ECAAttention(channels) if attention == "eca" else nn.Identity()
+        self.attn = build_attention(channels, attention)
         self.layer_scale = nn.Parameter(torch.ones(channels, 1, 1) * layer_scale)
         self.act = nn.GELU()
 
@@ -683,7 +717,7 @@ class DetectionHead(nn.Module):
             ConvBNAct(in_channels, head_channels, kernel_size=3),
             nn.Dropout2d(dropout) if dropout > 0 else nn.Identity(),
             RepConv(head_channels),
-            ECAAttention(head_channels) if attention == "eca" else nn.Identity(),
+            build_attention(head_channels, attention),
             nn.Dropout2d(dropout) if dropout > 0 else nn.Identity(),
             nn.Conv2d(head_channels, num_anchors * pred_dim, kernel_size=1),
         )
@@ -789,7 +823,7 @@ class EfficientDecoupledHead(nn.Module):
         self.reg_tower = nn.Sequential(
             ConvBNAct(in_channels, head_channels, kernel_size=3),
             RepConv(head_channels),
-            ECAAttention(head_channels) if attention == "eca" else nn.Identity(),
+            build_attention(head_channels, attention),
             nn.Dropout2d(dropout) if dropout > 0 else nn.Identity(),
             nn.Conv2d(head_channels, num_anchors * self.reg_dim, kernel_size=1),
         )
@@ -798,7 +832,7 @@ class EfficientDecoupledHead(nn.Module):
             nn.Conv2d(cls_channels, cls_channels, kernel_size=3, padding=1, groups=cls_channels, bias=False),
             nn.BatchNorm2d(cls_channels),
             nn.SiLU(inplace=True),
-            ECAAttention(cls_channels) if attention == "eca" else nn.Identity(),
+            build_attention(cls_channels, attention),
             nn.Dropout2d(dropout * 0.5) if dropout > 0 else nn.Identity(),
             nn.Conv2d(cls_channels, num_anchors * num_classes, kernel_size=1),
         )

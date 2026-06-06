@@ -4,10 +4,10 @@ multi_scale:
   enabled: false
 epochs: 80
 batch_size: 24
-val_batch_size: 48
+val_batch_size: 64
 lr: 0.0001
 lr_final_factor: 0.05
-backbone_lr_mult: 0.1
+backbone_lr_mult: 0.2
 weight_decay: 0.0005
 num_workers: 4
 channels_last: true
@@ -16,7 +16,7 @@ seed: 42
 amp: true
 warmup_epochs: 3
 label_smoothing: 0.05
-freeze_backbone_epochs: 3
+freeze_backbone_epochs: 2
 backbone_trainable: layer4
 backbone_freeze_bn: true
 early_stopping_patience: 15
@@ -41,23 +41,23 @@ augmentation:
   close_strong_aug_epoch: 55
 
 model:
-  backbone: convnext_small
+  backbone: resnet50
   pretrained: true
   base_channels: 40
-  head_channels: 192
-  neck_channels: 192
+  head_channels: 224
+  neck_channels: 224
   attention_heads: 0
   objectness_prior: 0.01
-  dropout: 0.12
+  dropout: 0.13
   elan_depth: 1
-  neck_type: convnext_fast_pan
-  neck_attention: eca
-  head_attention: eca
-  head_type: efficient_decoupled
+  neck_type: yolov7_pan
+  neck_attention: eca_spatial
+  head_attention: eca_spatial
+  head_type: standard
   aux_head: true
   aux_head_close_epoch: 30
   decoupled_head: false
-  cls_head_channels: 96
+  cls_head_channels: 160
   quality_head: false
 
 anchors:

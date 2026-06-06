@@ -438,38 +438,6 @@ Ket qua:
 - Epoch tot nhat:
 - Ghi chu:
 
-## v21_convnext_fast_pan_lite
-
-Ngay:
-
-Mo ta:
-- Giam nhe do nang cua v20 sau khi user bao train khoang 10 phut/epoch va muon xuong gan 9 phut/epoch.
-- Giu ConvNeXt-Small pretrained va cau truc `convnext_fast_pan + efficient_decoupled`, khong doi y tuong kien truc.
-- Giam detector adapter: `neck_channels/head_channels` 192 -> 176, `cls_head_channels` 96 -> 80.
-- Giam dropout 0.12 -> 0.10 vi model nho hon can it regularization hon.
-- Muc tieu: giam compute/VRAM cua neck/head mot chut, hy vong tiet kiem khoang 10% thoi gian epoch ma khong lam mat qua nhieu mAP.
-
-Config chinh:
-- `model.backbone: convnext_small`
-- `model.neck_type: convnext_fast_pan`
-- `model.head_type: efficient_decoupled`
-- `model.neck_channels: 176`
-- `model.head_channels: 176`
-- `model.cls_head_channels: 80`
-- `model.dropout: 0.10`
-- `batch_size: 16`
-
-Ket qua:
-- mAP@0.5:
-- Precision:
-- Recall:
-- Thoi gian train/epoch:
-- Thoi gian mAP validation:
-- Thoi gian predict/evaluate final:
-- Tong epoch train:
-- Epoch tot nhat:
-- Ghi chu:
-
 ## v13_resnet50_v11_merge_nms
 
 Ngay:
@@ -742,6 +710,43 @@ Config chinh:
 - `backbone_trainable: layer4`
 - `backbone_lr_mult: 0.1`
 - `freeze_backbone_epochs: 3`
+
+Ket qua:
+- mAP@0.5: 70
+- Precision:
+- Recall:
+- Thoi gian train/epoch: 10'
+- Thoi gian mAP validation:
+- Thoi gian predict/evaluate final:
+- Tong epoch train:
+- Epoch tot nhat:
+- Ghi chu:
+
+## v21_resnet50_channel_spatial_attention
+
+Ngay:
+
+Mo ta:
+- Reset active config ve nhanh ResNet50 tot nhat sau khi huong ConvNeXt hien tai khong on.
+- Giu nen user bao tot khoang 74.1 mAP: ResNet50 pretrained, YOLOv7 PAN, direct resize 512, BCE/sigmoid, DIoU/merge-NMS, augmentation v18, capacity detector 224/224/160.
+- Cai tien rong nhe tren nen do: mo rong attention tu ECA channel-only sang `eca_spatial`, gom ECA chon kenh + spatial attention 7x7 tu avg/max map de tap trung vung object.
+- Ap dung `eca_spatial` cho output cua YOLOv7 PAN neck va main DetectionHead; aux head van giu nhe.
+- Huong nay dua theo logic YOLOv11/YOLOv12 ve spatial/attention module, nhung dung ban cuc re, khong transformer/window attention, khong tang assignment/NMS.
+- Tat duong ConvNeXt trong config active; code ConvNeXt van con de tham khao nhung khong duoc dung khi train voi config hien tai.
+
+Config chinh:
+- `model.backbone: resnet50`
+- `model.neck_type: yolov7_pan`
+- `model.head_type: standard`
+- `model.neck_channels: 224`
+- `model.head_channels: 224`
+- `model.cls_head_channels: 160`
+- `model.neck_attention: eca_spatial`
+- `model.head_attention: eca_spatial`
+- `batch_size: 24`
+- `val_batch_size: 64`
+- `freeze_backbone_epochs: 2`
+- `backbone_lr_mult: 0.2`
 
 Ket qua:
 - mAP@0.5:
