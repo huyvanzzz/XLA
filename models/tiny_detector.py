@@ -368,6 +368,113 @@ class ConvNeXtDownsample(nn.Module):
         return self.block(x)
 
 
+class FastConvNeXtProject(nn.Module):
+    """NCHW projection for ConvNeXt features without LayerNorm permutes in the detector adapter."""
+
+    def __init__(self, in_channels: int, out_channels: int) -> None:
+        super().__init__()
+        self.block = nn.Sequential(
+            nn.Conv2d(in_channels, out_channels, kernel_size=1, bias=False),
+            nn.BatchNorm2d(out_channels),
+            nn.GELU(),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.block(x)
+
+
+class FastConvNeXtFusionBlock(nn.Module):
+    """Large-kernel depthwise fusion block kept channels-first for speed."""
+
+    def __init__(self, channels: int, expansion: int = 2, layer_scale: float = 1e-4, attention: str = "eca") -> None:
+        super().__init__()
+        hidden = channels * expansion
+        self.spatial = nn.Sequential(
+            nn.Conv2d(channels, channels, kernel_size=7, padding=3, groups=channels, bias=False),
+            nn.BatchNorm2d(channels),
+            nn.GELU(),
+        )
+        self.channel = nn.Sequential(
+            nn.Conv2d(channels, hidden, kernel_size=1, bias=False),
+            nn.BatchNorm2d(hidden),
+            nn.GELU(),
+            nn.Conv2d(hidden, channels, kernel_size=1, bias=False),
+            nn.BatchNorm2d(channels),
+        )
+        self.attn = ECAAttention(channels) if attention == "eca" else nn.Identity()
+        self.layer_scale = nn.Parameter(torch.ones(channels, 1, 1) * layer_scale)
+        self.act = nn.GELU()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        y = self.spatial(x)
+        y = self.channel(y)
+        y = self.attn(y)
+        return self.act(x + self.layer_scale * y)
+
+
+class FastConvNeXtDownsample(nn.Module):
+    def __init__(self, channels: int) -> None:
+        super().__init__()
+        self.block = nn.Sequential(
+            nn.Conv2d(channels, channels, kernel_size=3, stride=2, padding=1, groups=channels, bias=False),
+            nn.BatchNorm2d(channels),
+            nn.GELU(),
+            nn.Conv2d(channels, channels, kernel_size=1, bias=False),
+            nn.BatchNorm2d(channels),
+            nn.GELU(),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.block(x)
+
+
+class FastConvNeXtPANNeck(nn.Module):
+    """ConvNeXt-aligned FPN/PAN neck using large-kernel depthwise blocks but no NHWC shuffles."""
+
+    def __init__(self, in_channels: list[int], out_channels: int = 192, depth: int = 1, attention: str = "eca") -> None:
+        super().__init__()
+        depth = max(1, int(depth))
+        self.lateral3 = FastConvNeXtProject(in_channels[0], out_channels)
+        self.lateral4 = FastConvNeXtProject(in_channels[1], out_channels)
+        self.lateral5 = FastConvNeXtProject(in_channels[2], out_channels)
+        self.deep_context = nn.Sequential(*[FastConvNeXtFusionBlock(out_channels, attention=attention) for _ in range(depth)])
+        self.fuse4 = nn.Sequential(
+            FastConvNeXtProject(out_channels * 2, out_channels),
+            *[FastConvNeXtFusionBlock(out_channels, attention=attention) for _ in range(depth)],
+        )
+        self.fuse3 = nn.Sequential(
+            FastConvNeXtProject(out_channels * 2, out_channels),
+            *[FastConvNeXtFusionBlock(out_channels, attention=attention) for _ in range(depth)],
+        )
+        self.down3 = FastConvNeXtDownsample(out_channels)
+        self.pan4 = nn.Sequential(
+            FastConvNeXtProject(out_channels * 2, out_channels),
+            *[FastConvNeXtFusionBlock(out_channels, attention=attention) for _ in range(depth)],
+        )
+        self.down4 = FastConvNeXtDownsample(out_channels)
+        self.pan5 = nn.Sequential(
+            FastConvNeXtProject(out_channels * 2, out_channels),
+            *[FastConvNeXtFusionBlock(out_channels, attention=attention) for _ in range(depth)],
+        )
+
+    def forward(self, features: tuple[torch.Tensor, torch.Tensor, torch.Tensor]) -> list[torch.Tensor]:
+        p3, p4, p5 = features
+        p3 = self.lateral3(p3)
+        p4 = self.lateral4(p4)
+        p5 = self.deep_context(self.lateral5(p5))
+
+        p5_up = torch.nn.functional.interpolate(p5, size=p4.shape[-2:], mode="nearest")
+        p4_td = self.fuse4(torch.cat([p4, p5_up], dim=1))
+        p4_up = torch.nn.functional.interpolate(p4_td, size=p3.shape[-2:], mode="nearest")
+        p3_out = self.fuse3(torch.cat([p3, p4_up], dim=1))
+
+        p3_down = self.down3(p3_out)
+        p4_out = self.pan4(torch.cat([p4_td, p3_down], dim=1))
+        p4_down = self.down4(p4_out)
+        p5_out = self.pan5(torch.cat([p5, p4_down], dim=1))
+        return [p3_out, p4_out, p5_out]
+
+
 class ConvNeXtPANNeck(nn.Module):
     """FPN/PAN neck using ConvNeXt-style normalization and depthwise large-kernel fusion."""
 
@@ -562,12 +669,21 @@ class ResNet50Backbone(nn.Module):
 
 
 class DetectionHead(nn.Module):
-    def __init__(self, in_channels: int, head_channels: int, num_anchors: int, pred_dim: int, dropout: float) -> None:
+    def __init__(
+        self,
+        in_channels: int,
+        head_channels: int,
+        num_anchors: int,
+        pred_dim: int,
+        dropout: float,
+        attention: str = "none",
+    ) -> None:
         super().__init__()
         self.head = nn.Sequential(
             ConvBNAct(in_channels, head_channels, kernel_size=3),
             nn.Dropout2d(dropout) if dropout > 0 else nn.Identity(),
             RepConv(head_channels),
+            ECAAttention(head_channels) if attention == "eca" else nn.Identity(),
             nn.Dropout2d(dropout) if dropout > 0 else nn.Identity(),
             nn.Conv2d(head_channels, num_anchors * pred_dim, kernel_size=1),
         )
@@ -650,6 +766,84 @@ class ConvNeXtDetectionHead(nn.Module):
         if not isinstance(final_conv, nn.Conv2d) or final_conv.bias is None:
             return
         bias = final_conv.bias.view(self.num_anchors, self.pred_dim)
+        with torch.no_grad():
+            bias[:, 4].fill_(float(objectness_logit))
+
+
+class EfficientDecoupledHead(nn.Module):
+    """Light decoupled YOLO head: stronger box/object path, cheap depthwise class path."""
+
+    def __init__(
+        self,
+        in_channels: int,
+        head_channels: int,
+        cls_channels: int,
+        num_anchors: int,
+        pred_dim: int,
+        num_classes: int,
+        dropout: float,
+        attention: str = "eca",
+    ) -> None:
+        super().__init__()
+        self.reg_dim = pred_dim - num_classes
+        self.reg_tower = nn.Sequential(
+            ConvBNAct(in_channels, head_channels, kernel_size=3),
+            RepConv(head_channels),
+            ECAAttention(head_channels) if attention == "eca" else nn.Identity(),
+            nn.Dropout2d(dropout) if dropout > 0 else nn.Identity(),
+            nn.Conv2d(head_channels, num_anchors * self.reg_dim, kernel_size=1),
+        )
+        self.cls_tower = nn.Sequential(
+            ConvBNAct(in_channels, cls_channels, kernel_size=1),
+            nn.Conv2d(cls_channels, cls_channels, kernel_size=3, padding=1, groups=cls_channels, bias=False),
+            nn.BatchNorm2d(cls_channels),
+            nn.SiLU(inplace=True),
+            ECAAttention(cls_channels) if attention == "eca" else nn.Identity(),
+            nn.Dropout2d(dropout * 0.5) if dropout > 0 else nn.Identity(),
+            nn.Conv2d(cls_channels, num_anchors * num_classes, kernel_size=1),
+        )
+        self.num_anchors = num_anchors
+        self.pred_dim = pred_dim
+        self.num_classes = num_classes
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        reg_obj = self.reg_tower(x)
+        cls = self.cls_tower(x)
+        n, _, h, w = reg_obj.shape
+        reg_obj = reg_obj.view(n, self.num_anchors, self.reg_dim, h, w)
+        cls = cls.view(n, self.num_anchors, self.num_classes, h, w)
+        if self.reg_dim > 5:
+            y = torch.cat([reg_obj[:, :, :5], cls, reg_obj[:, :, 5:]], dim=2)
+        else:
+            y = torch.cat([reg_obj, cls], dim=2)
+        return y.permute(0, 3, 4, 1, 2).contiguous()
+
+    def initialize_biases(self, objectness_prior: float = 0.01) -> None:
+        final_reg = self.reg_tower[-1]
+        final_cls = self.cls_tower[-1]
+        if isinstance(final_reg, nn.Conv2d) and final_reg.bias is not None:
+            prior = min(max(float(objectness_prior), 1e-4), 1.0 - 1e-4)
+            bias = final_reg.bias.view(self.num_anchors, self.reg_dim)
+            with torch.no_grad():
+                bias[:, 4].fill_(math.log(prior / (1.0 - prior)))
+        if isinstance(final_cls, nn.Conv2d) and final_cls.bias is not None:
+            with torch.no_grad():
+                final_cls.bias.zero_()
+
+    def initialize_class_biases(self, class_priors: torch.Tensor) -> None:
+        final_cls = self.cls_tower[-1]
+        if not isinstance(final_cls, nn.Conv2d) or final_cls.bias is None:
+            return
+        log_priors = class_priors.to(final_cls.bias.device, final_cls.bias.dtype).clamp(min=1e-6).log()
+        bias = final_cls.bias.view(self.num_anchors, self.num_classes)
+        with torch.no_grad():
+            bias[:, : log_priors.numel()].copy_(log_priors)
+
+    def initialize_objectness_bias(self, objectness_logit: float) -> None:
+        final_reg = self.reg_tower[-1]
+        if not isinstance(final_reg, nn.Conv2d) or final_reg.bias is None:
+            return
+        bias = final_reg.bias.view(self.num_anchors, self.reg_dim)
         with torch.no_grad():
             bias[:, 4].fill_(float(objectness_logit))
 
@@ -746,6 +940,7 @@ class TinyDetector(nn.Module):
         cls_head_channels: int | None = None,
         neck_type: str = "fpnpan",
         neck_attention: str = "none",
+        head_attention: str = "none",
         head_type: str = "standard",
         backbone: str = "resnet50",
         pretrained: bool = True,
@@ -791,35 +986,56 @@ class TinyDetector(nn.Module):
         self.backbone_name = backbone
         if neck_type == "yolov7_pan":
             self.neck = YoloV7PANNeck(feature_channels, out_channels=neck_channels, attention=str(neck_attention))
+        elif neck_type == "convnext_fast_pan":
+            self.neck = FastConvNeXtPANNeck(feature_channels, out_channels=neck_channels, depth=max(1, elan_depth), attention=str(neck_attention))
         elif neck_type == "convnext_pan":
             self.neck = ConvNeXtPANNeck(feature_channels, out_channels=neck_channels, depth=max(1, elan_depth))
         else:
             self.neck = FPNPANNeck(feature_channels, out_channels=neck_channels, attention_heads=attention_heads)
         feature_channels = [neck_channels, neck_channels, neck_channels]
         cls_channels = int(cls_head_channels or max(head_channels // 2, 64))
-        if decoupled_head:
+        if head_type == "efficient_decoupled":
+            head_cls = EfficientDecoupledHead
+        elif decoupled_head:
             head_cls = DecoupledDetectionHead
         elif head_type == "convnext":
             head_cls = ConvNeXtDetectionHead
         else:
             head_cls = DetectionHead
 
-        if decoupled_head:
+        if decoupled_head or head_type == "efficient_decoupled":
+            decoupled_attention = str(head_attention) if head_cls is EfficientDecoupledHead else "none"
             self.main_heads = nn.ModuleList(
                 [
-                    head_cls(feature_channels[0], head_channels, cls_channels, self.num_anchors[0], self.pred_dim, num_classes, dropout),
-                    head_cls(feature_channels[1], head_channels, cls_channels, self.num_anchors[1], self.pred_dim, num_classes, dropout),
-                    head_cls(feature_channels[2], head_channels, cls_channels, self.num_anchors[2], self.pred_dim, num_classes, dropout),
+                    head_cls(feature_channels[0], head_channels, cls_channels, self.num_anchors[0], self.pred_dim, num_classes, dropout, attention=decoupled_attention)
+                    if head_cls is EfficientDecoupledHead
+                    else head_cls(feature_channels[0], head_channels, cls_channels, self.num_anchors[0], self.pred_dim, num_classes, dropout),
+                    head_cls(feature_channels[1], head_channels, cls_channels, self.num_anchors[1], self.pred_dim, num_classes, dropout, attention=decoupled_attention)
+                    if head_cls is EfficientDecoupledHead
+                    else head_cls(feature_channels[1], head_channels, cls_channels, self.num_anchors[1], self.pred_dim, num_classes, dropout),
+                    head_cls(feature_channels[2], head_channels, cls_channels, self.num_anchors[2], self.pred_dim, num_classes, dropout, attention=decoupled_attention)
+                    if head_cls is EfficientDecoupledHead
+                    else head_cls(feature_channels[2], head_channels, cls_channels, self.num_anchors[2], self.pred_dim, num_classes, dropout),
                 ]
             )
         else:
-            self.main_heads = nn.ModuleList(
-                [
-                    head_cls(feature_channels[0], head_channels, self.num_anchors[0], self.pred_dim, dropout),
-                    head_cls(feature_channels[1], head_channels, self.num_anchors[1], self.pred_dim, dropout),
-                    head_cls(feature_channels[2], head_channels, self.num_anchors[2], self.pred_dim, dropout),
-                ]
-            )
+            main_attention = str(head_attention) if head_cls is DetectionHead else "none"
+            if head_cls is DetectionHead:
+                self.main_heads = nn.ModuleList(
+                    [
+                        head_cls(feature_channels[0], head_channels, self.num_anchors[0], self.pred_dim, dropout, attention=main_attention),
+                        head_cls(feature_channels[1], head_channels, self.num_anchors[1], self.pred_dim, dropout, attention=main_attention),
+                        head_cls(feature_channels[2], head_channels, self.num_anchors[2], self.pred_dim, dropout, attention=main_attention),
+                    ]
+                )
+            else:
+                self.main_heads = nn.ModuleList(
+                    [
+                        head_cls(feature_channels[0], head_channels, self.num_anchors[0], self.pred_dim, dropout),
+                        head_cls(feature_channels[1], head_channels, self.num_anchors[1], self.pred_dim, dropout),
+                        head_cls(feature_channels[2], head_channels, self.num_anchors[2], self.pred_dim, dropout),
+                    ]
+                )
         self.aux_head_enabled = aux_head
         if decoupled_head:
             aux_cls_channels = max(cls_channels // 2, 32)

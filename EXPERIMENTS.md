@@ -621,7 +621,7 @@ Ket qua:
 - Epoch tot nhat:
 - Ghi chu:
 
-## v17_v17_slight_capacity_aug
+## v18_v17_slight_capacity_aug
 
 Ngay:
 
@@ -643,6 +643,73 @@ Config chinh:
 - `augmentation.random_erasing_max_area: 0.1`
 - `augmentation.color_jitter_prob: 0.35`
 - `augmentation.color_jitter_min/max: 0.7/1.3`
+
+Ket qua:
+- mAP@0.5: 74.1
+- Precision:
+- Recall:
+- Thoi gian train/epoch: 6'
+- Thoi gian mAP validation:
+- Thoi gian predict/evaluate final:
+- Tong epoch train:
+- Epoch tot nhat:
+- Ghi chu:
+
+## v19_v18_head_eca
+
+Ngay:
+
+Mo ta:
+- Giu nguyen nen v18 dang tot, user bao dat khoang 74.1 mAP.
+- Khong tang tiep channels de tranh train cham/overfit sau khi config thuc te da len `neck/head_channels: 224` va `cls_head_channels: 160`.
+- Them `head_attention: eca` cho main DetectionHead sau RepConv va truoc conv du doan cuoi.
+- Aux head van giu khong attention de khong lam 30 epoch dau nang them nhieu.
+- Y tuong: neck da co ECA de chon kenh feature fuse, head them ECA nhe de cai thien channel ranking ngay truoc object/class/box logits.
+
+Config chinh:
+- `model.head_attention: eca`
+- Giu `model.neck_attention: eca`
+- Giu `model.neck_channels: 224`
+- Giu `model.head_channels: 224`
+- Giu `model.cls_head_channels: 160`
+
+Ket qua:
+- mAP@0.5:
+- Precision:
+- Recall:
+- Thoi gian train/epoch:
+- Thoi gian mAP validation:
+- Thoi gian predict/evaluate final:
+- Tong epoch train:
+- Epoch tot nhat:
+- Ghi chu:
+
+## v20_convnext_small_fast_pan_eff_head
+
+Ngay:
+
+Mo ta:
+- Doi huong rong hon theo yeu cau: dung backbone manh hon ResNet50 la `ConvNeXt-Small` pretrained.
+- Khong chi thay backbone: them neck moi `convnext_fast_pan` de hop ConvNeXt nhung tranh loi cham cua v8/v9.
+- Neck moi dung FPN/PAN, projection 1x1, large-kernel depthwise 7x7, BN/GELU, residual layer-scale va ECA, tat ca giu NCHW de tranh LayerNorm/permute trong adapter.
+- Them `EfficientDecoupledHead`: reg/objectness tower manh hon, classification tower nhe bang depthwise conv, theo tinh than YOLOv6/YOLOv10 rang cls head nen tiet kiem compute hon reg head.
+- Giu YOLOv7-style decode/loss/target offsets/scale objectness balance, DIoU-NMS va merge-NMS tu cai.
+- De kiem soat thoi gian: chi fine-tune `convnext.stage4`, backbone LR giam 0.1, batch size ve 16, neck/head 192 thay vi 224.
+
+Config chinh:
+- `model.backbone: convnext_small`
+- `model.neck_type: convnext_fast_pan`
+- `model.head_type: efficient_decoupled`
+- `model.neck_channels: 192`
+- `model.head_channels: 192`
+- `model.cls_head_channels: 96`
+- `model.neck_attention: eca`
+- `model.head_attention: eca`
+- `batch_size: 16`
+- `val_batch_size: 48`
+- `backbone_trainable: layer4`
+- `backbone_lr_mult: 0.1`
+- `freeze_backbone_epochs: 3`
 
 Ket qua:
 - mAP@0.5:
