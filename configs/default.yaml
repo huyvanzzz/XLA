@@ -15,7 +15,7 @@ cudnn_benchmark: true
 seed: 42
 amp: true
 warmup_epochs: 3
-label_smoothing: 0.05
+label_smoothing: 0.02
 freeze_backbone_epochs: 2
 backbone_trainable: layer4
 backbone_freeze_bn: true
@@ -53,7 +53,7 @@ model:
   neck_type: yolov7_pan
   neck_attention: eca_spatial
   head_attention: eca_spatial
-  head_coordconv: true
+  head_coordconv: false
   head_type: standard
   aux_head: true
   aux_head_close_epoch: 30
@@ -114,7 +114,7 @@ loss_weights:
   noobj_hard_negative_ratio: 0.0
   noobj_hard_negative_min: 256
   classification_loss: bce
-  classification_quality_mix: 0.0
+  classification_quality_mix: 0.1
   quality_weight: 0.0
 
 inference:

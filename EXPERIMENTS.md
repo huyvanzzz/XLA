@@ -782,7 +782,40 @@ Config chinh:
 - `model.cls_head_channels: 160`
 
 Ket qua:
-- mAP@0.5:
+- mAP@0.5: 72
+- Precision:
+- Recall:
+- Thoi gian train/epoch:
+- Thoi gian mAP validation:
+- Thoi gian predict/evaluate final:
+- Tong epoch train:
+- Epoch tot nhat:
+- Ghi chu: User bao cai tien nay te di nhieu, khong tiep tuc. Active config da tat `head_coordconv`.
+
+## v23_resnet50_light_quality_ranking
+
+Ngay:
+
+Mo ta:
+- Reset active config ve nen v21 vi v22 CoordConv lam ket qua te di nhieu.
+- Giu kien truc v21: ResNet50 pretrained, YOLOv7 PAN, `eca_spatial`, head/neck 224, cls head 160, batch 24.
+- Khong doi backbone/head shape, de giam rui ro va co the quay lai checkpoint/ket qua v21 de so sanh logic hon.
+- Cai tien moi nam o ranking loss: giam `label_smoothing` 0.05 -> 0.02 de confidence cua class sac hon.
+- Bat `classification_quality_mix: 0.10` that nhe: positive class target duoc giam nhe theo IoU cua bbox, giup class confidence gan hon voi chat luong localization.
+- Khac v15: khong bat objectness bias, khong anchor evolution, khong EMA ramp, khong quality head; chi giu mot signal quality nhe de tranh lam hong training.
+
+Config chinh:
+- `model.head_coordconv: false`
+- `model.backbone: resnet50`
+- `model.neck_type: yolov7_pan`
+- `model.neck_attention: eca_spatial`
+- `model.head_attention: eca_spatial`
+- `label_smoothing: 0.02`
+- `loss_weights.classification_quality_mix: 0.10`
+- `loss_weights.classification_loss: bce`
+
+Ket qua:
+- mAP@0.5: 
 - Precision:
 - Recall:
 - Thoi gian train/epoch:
