@@ -749,6 +749,39 @@ Config chinh:
 - `backbone_lr_mult: 0.2`
 
 Ket qua:
+- mAP@0.5: 74.75
+- Precision:
+- Recall:
+- Thoi gian train/epoch: 6'
+- Thoi gian mAP validation:
+- Thoi gian predict/evaluate final:
+- Tong epoch train:
+- Epoch tot nhat:
+- Ghi chu:
+
+## v22_resnet50_coordconv_head
+
+Ngay:
+
+Mo ta:
+- Cai tien tiep tren nen v21 da dat 74.75 mAP.
+- Giu nguyen ResNet50 pretrained, YOLOv7 PAN, `eca_spatial`, capacity 224/224/160, batch 24.
+- Them `head_coordconv: true` cho main DetectionHead: append 2 kenh toa do x/y chuan hoa [-1, 1] vao feature map truoc conv dau cua detection head.
+- Ly do: bai nay direct resize 512, object/co the co spatial prior va bbox decode phu thuoc grid; CoordConv giup head hoc quan he vi tri/bien anh ro hon ma chi tang rat it tham so.
+- Aux head van khong dung CoordConv de giu do nhe trong giai do dau train.
+- Chi phi them rat nho, nhung checkpoint cu khong load strict duoc vao head moi; can train lai tu dau cho version nay.
+
+Config chinh:
+- `model.backbone: resnet50`
+- `model.neck_type: yolov7_pan`
+- `model.neck_attention: eca_spatial`
+- `model.head_attention: eca_spatial`
+- `model.head_coordconv: true`
+- `model.neck_channels: 224`
+- `model.head_channels: 224`
+- `model.cls_head_channels: 160`
+
+Ket qua:
 - mAP@0.5:
 - Precision:
 - Recall:

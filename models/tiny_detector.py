@@ -299,6 +299,20 @@ def build_attention(channels: int, attention: str) -> nn.Module:
     return nn.Identity()
 
 
+class CoordChannels(nn.Module):
+    """Append normalized x/y coordinate channels for detection heads."""
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        n, _, h, w = x.shape
+        yy, xx = torch.meshgrid(
+            torch.linspace(-1.0, 1.0, h, device=x.device, dtype=x.dtype),
+            torch.linspace(-1.0, 1.0, w, device=x.device, dtype=x.dtype),
+            indexing="ij",
+        )
+        coords = torch.stack([xx, yy], dim=0).unsqueeze(0).expand(n, -1, -1, -1)
+        return torch.cat([x, coords], dim=1)
+
+
 class YoloV7PANNeck(nn.Module):
     """YOLOv7-style SPPCSPC + ELAN FPN/PAN neck adapted to pretrained backbones."""
 
@@ -711,10 +725,13 @@ class DetectionHead(nn.Module):
         pred_dim: int,
         dropout: float,
         attention: str = "none",
+        coordconv: bool = False,
     ) -> None:
         super().__init__()
+        first_in_channels = in_channels + 2 if coordconv else in_channels
         self.head = nn.Sequential(
-            ConvBNAct(in_channels, head_channels, kernel_size=3),
+            CoordChannels() if coordconv else nn.Identity(),
+            ConvBNAct(first_in_channels, head_channels, kernel_size=3),
             nn.Dropout2d(dropout) if dropout > 0 else nn.Identity(),
             RepConv(head_channels),
             build_attention(head_channels, attention),
@@ -975,6 +992,7 @@ class TinyDetector(nn.Module):
         neck_type: str = "fpnpan",
         neck_attention: str = "none",
         head_attention: str = "none",
+        head_coordconv: bool = False,
         head_type: str = "standard",
         backbone: str = "resnet50",
         pretrained: bool = True,
@@ -1057,9 +1075,9 @@ class TinyDetector(nn.Module):
             if head_cls is DetectionHead:
                 self.main_heads = nn.ModuleList(
                     [
-                        head_cls(feature_channels[0], head_channels, self.num_anchors[0], self.pred_dim, dropout, attention=main_attention),
-                        head_cls(feature_channels[1], head_channels, self.num_anchors[1], self.pred_dim, dropout, attention=main_attention),
-                        head_cls(feature_channels[2], head_channels, self.num_anchors[2], self.pred_dim, dropout, attention=main_attention),
+                        head_cls(feature_channels[0], head_channels, self.num_anchors[0], self.pred_dim, dropout, attention=main_attention, coordconv=bool(head_coordconv)),
+                        head_cls(feature_channels[1], head_channels, self.num_anchors[1], self.pred_dim, dropout, attention=main_attention, coordconv=bool(head_coordconv)),
+                        head_cls(feature_channels[2], head_channels, self.num_anchors[2], self.pred_dim, dropout, attention=main_attention, coordconv=bool(head_coordconv)),
                     ]
                 )
             else:

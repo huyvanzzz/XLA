@@ -57,6 +57,7 @@ DEFAULT_CONFIG = {
         "neck_type": "yolov7_pan",
         "neck_attention": "eca_spatial",
         "head_attention": "eca_spatial",
+        "head_coordconv": True,
         "head_type": "standard",
         "aux_head": True,
         "aux_head_close_epoch": 30,
