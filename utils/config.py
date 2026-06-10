@@ -25,6 +25,11 @@ DEFAULT_CONFIG = {
     "label_smoothing": 0.02,
     "freeze_backbone_epochs": 2,
     "backbone_trainable": "layer4",
+    "late_backbone": {
+        "enabled": True,
+        "start_epoch": 55,
+        "trainable": "layer3_layer4",
+    },
     "backbone_freeze_bn": True,
     "early_stopping_patience": 10,
     "validation_loss": {"enabled": False},
@@ -58,6 +63,7 @@ DEFAULT_CONFIG = {
         "neck_attention": "eca_spatial",
         "head_attention": "eca_spatial",
         "head_coordconv": False,
+        "head_refine": True,
         "head_type": "standard",
         "aux_head": True,
         "aux_head_close_epoch": 30,
@@ -106,6 +112,7 @@ DEFAULT_CONFIG = {
         "noobj_hard_negative_min": 256,
         "classification_loss": "bce",
         "classification_quality_mix": 0.1,
+        "classification_focal_gamma": 0.5,
         "quality_weight": 0.0,
     },
     "inference": {

@@ -726,6 +726,7 @@ class DetectionHead(nn.Module):
         dropout: float,
         attention: str = "none",
         coordconv: bool = False,
+        refine: bool = False,
     ) -> None:
         super().__init__()
         first_in_channels = in_channels + 2 if coordconv else in_channels
@@ -734,6 +735,7 @@ class DetectionHead(nn.Module):
             ConvBNAct(first_in_channels, head_channels, kernel_size=3),
             nn.Dropout2d(dropout) if dropout > 0 else nn.Identity(),
             RepConv(head_channels),
+            LargeKernelBlock(head_channels, kernel_size=7) if refine else nn.Identity(),
             build_attention(head_channels, attention),
             nn.Dropout2d(dropout) if dropout > 0 else nn.Identity(),
             nn.Conv2d(head_channels, num_anchors * pred_dim, kernel_size=1),
@@ -993,6 +995,7 @@ class TinyDetector(nn.Module):
         neck_attention: str = "none",
         head_attention: str = "none",
         head_coordconv: bool = False,
+        head_refine: bool = False,
         head_type: str = "standard",
         backbone: str = "resnet50",
         pretrained: bool = True,
@@ -1075,9 +1078,9 @@ class TinyDetector(nn.Module):
             if head_cls is DetectionHead:
                 self.main_heads = nn.ModuleList(
                     [
-                        head_cls(feature_channels[0], head_channels, self.num_anchors[0], self.pred_dim, dropout, attention=main_attention, coordconv=bool(head_coordconv)),
-                        head_cls(feature_channels[1], head_channels, self.num_anchors[1], self.pred_dim, dropout, attention=main_attention, coordconv=bool(head_coordconv)),
-                        head_cls(feature_channels[2], head_channels, self.num_anchors[2], self.pred_dim, dropout, attention=main_attention, coordconv=bool(head_coordconv)),
+                        head_cls(feature_channels[0], head_channels, self.num_anchors[0], self.pred_dim, dropout, attention=main_attention, coordconv=bool(head_coordconv), refine=bool(head_refine)),
+                        head_cls(feature_channels[1], head_channels, self.num_anchors[1], self.pred_dim, dropout, attention=main_attention, coordconv=bool(head_coordconv), refine=bool(head_refine)),
+                        head_cls(feature_channels[2], head_channels, self.num_anchors[2], self.pred_dim, dropout, attention=main_attention, coordconv=bool(head_coordconv), refine=bool(head_refine)),
                     ]
                 )
             else:

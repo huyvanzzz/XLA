@@ -41,6 +41,7 @@ class YoloLoss(nn.Module):
         scale_obj_balance: list[float] | None = None,
         classification_loss: str = "ce",
         classification_quality_mix: float = 0.0,
+        classification_focal_gamma: float = 0.0,
         quality_weight: float = 0.0,
     ) -> None:
         super().__init__()
@@ -72,6 +73,7 @@ class YoloLoss(nn.Module):
         self.scale_obj_balance = [float(v) for v in scale_obj_balance] if scale_obj_balance else []
         self.classification_loss = str(classification_loss).lower()
         self.classification_quality_mix = min(max(float(classification_quality_mix), 0.0), 1.0)
+        self.classification_focal_gamma = max(float(classification_focal_gamma), 0.0)
         self.quality_weight = max(float(quality_weight), 0.0)
         if class_weights is not None:
             self.register_buffer("class_weights", torch.tensor(class_weights, dtype=torch.float32))
@@ -502,6 +504,10 @@ class YoloLoss(nn.Module):
                 positive = positive * quality_target.to(logits.dtype)
             target.scatter_(1, labels[:, None], positive)
             loss = F.binary_cross_entropy_with_logits(logits, target, reduction="none")
+            if self.classification_focal_gamma > 0.0:
+                probs = torch.sigmoid(logits)
+                pt = probs * target + (1.0 - probs) * (1.0 - target)
+                loss = loss * (1.0 - pt).pow(self.classification_focal_gamma)
             if self.class_weights is not None:
                 loss = loss * self.class_weights.to(logits.device, logits.dtype).view(1, -1)
             return loss.sum() / normalizer

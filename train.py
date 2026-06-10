@@ -263,7 +263,7 @@ def evaluate_predictions_map(
     predictions: list[dict[str, object]],
     classes: list[str],
     iou_threshold: float = 0.5,
-) -> dict[str, float]:
+) -> dict[str, object]:
     with Path(ground_truth_path).open("r", encoding="utf-8") as f:
         gt = json.load(f)
     gt_by_class = {name: {} for name in classes}
@@ -290,6 +290,7 @@ def evaluate_predictions_map(
     total_tp = 0
     total_fp = 0
     total_gt = 0
+    per_class: dict[str, dict[str, float | int]] = {}
     for class_name in classes:
         class_gt = gt_by_class[class_name]
         num_gt = sum(len(v) for v in class_gt.values())
@@ -324,17 +325,50 @@ def evaluate_predictions_map(
             fp_sum += fp
             recalls.append(tp_sum / num_gt if num_gt else 0.0)
             precisions.append(tp_sum / max(tp_sum + fp_sum, 1))
+        ap = compute_ap(recalls, precisions) if num_gt else 0.0
         if num_gt:
-            aps.append(compute_ap(recalls, precisions))
+            aps.append(ap)
         total_tp += tp_sum
         total_fp += fp_sum
         total_gt += num_gt
+        per_class[class_name] = {
+            "ap": ap,
+            "num_ground_truth": num_gt,
+            "num_predictions": len(class_preds),
+            "true_positives": tp_sum,
+            "false_positives": fp_sum,
+            "precision": tp_sum / max(tp_sum + fp_sum, 1),
+            "recall": tp_sum / num_gt if num_gt else 0.0,
+        }
 
     return {
         "map50": sum(aps) / len(aps) if aps else 0.0,
         "precision": total_tp / max(total_tp + total_fp, 1),
         "recall": total_tp / total_gt if total_gt else 0.0,
+        "per_class": per_class,
     }
+
+
+def print_per_class_map(title: str, metric_logs: dict[str, object] | None) -> None:
+    if not metric_logs or "per_class" not in metric_logs:
+        return
+    print(title)
+    per_class = metric_logs["per_class"]
+    if not isinstance(per_class, dict):
+        return
+    for class_name, values in per_class.items():
+        if not isinstance(values, dict):
+            continue
+        ap = float(values.get("ap", 0.0))
+        precision = float(values.get("precision", 0.0))
+        recall = float(values.get("recall", 0.0))
+        num_gt = int(values.get("num_ground_truth", 0))
+        num_pred = int(values.get("num_predictions", 0))
+        print(
+            f"  {class_name}: AP@0.5={ap:.4f} "
+            f"precision={precision:.4f} recall={recall:.4f} "
+            f"gt={num_gt} pred={num_pred}"
+        )
 
 
 class ModelEMA:
@@ -500,7 +534,7 @@ def evaluate_map(
     decode_style: str,
     class_activation: str,
     quality_score_power: float,
-) -> dict[str, float]:
+) -> dict[str, object]:
     model.eval()
     predictions = []
     progress = tqdm(loader, desc="mAP eval", leave=False, dynamic_ncols=True)
@@ -545,7 +579,7 @@ def evaluate_map_with_optional_tuning(
     device: torch.device,
     metric_config: dict,
     epoch: int,
-) -> dict[str, float]:
+) -> dict[str, object]:
     should_tune = bool(metric_config.get("tune", False)) and epoch % int(metric_config.get("tune_every", 1)) == 0
     conf_values = metric_config["conf_thresholds"] if should_tune else [metric_config["conf_threshold"]]
     nms_values = metric_config["nms_thresholds"] if should_tune else [metric_config["nms_threshold"]]
@@ -699,6 +733,7 @@ def main() -> None:
         scale_obj_balance=loss_weights.get("scale_obj_balance"),
         classification_loss=str(loss_weights.get("classification_loss", "ce")),
         classification_quality_mix=float(loss_weights.get("classification_quality_mix", 0.0)),
+        classification_focal_gamma=float(loss_weights.get("classification_focal_gamma", 0.0)),
         quality_weight=float(loss_weights.get("quality_weight", 0.0)),
     ).to(device)
     decay_backbone = []
@@ -746,6 +781,10 @@ def main() -> None:
     )
     freeze_backbone_epochs = int(config["freeze_backbone_epochs"])
     backbone_trainable = str(config.get("backbone_trainable", "layer4"))
+    late_backbone_config = config.get("late_backbone", {})
+    late_backbone_enabled = bool(late_backbone_config.get("enabled", False))
+    late_backbone_start_epoch = int(late_backbone_config.get("start_epoch", 0))
+    late_backbone_trainable = str(late_backbone_config.get("trainable", backbone_trainable))
     freeze_backbone_bn = bool(config.get("backbone_freeze_bn", True))
     early_stopping_patience = int(config["early_stopping_patience"])
 
@@ -754,6 +793,8 @@ def main() -> None:
     if not use_map_for_best and not use_val_loss:
         raise ValueError("Enable validation_metric or validation_loss so best checkpoint can be selected.")
     best_score = float("-inf") if use_map_for_best else float("inf")
+    best_metric_logs = None
+    best_epoch = 0
     epochs_without_improvement = 0
     mosaic_closed = False
     strong_aug_closed = False
@@ -780,11 +821,16 @@ def main() -> None:
             criterion.image_size = args.image_size
 
         freeze_backbone = epoch <= freeze_backbone_epochs
-        set_backbone_trainable(model, freeze_backbone, backbone_trainable)
+        active_backbone_trainable = backbone_trainable
+        if late_backbone_enabled and late_backbone_start_epoch > 0 and epoch >= late_backbone_start_epoch:
+            active_backbone_trainable = late_backbone_trainable
+            if epoch == late_backbone_start_epoch:
+                print(f"late unfreezing backbone mode={active_backbone_trainable} at epoch {epoch}")
+        set_backbone_trainable(model, freeze_backbone, active_backbone_trainable)
         if epoch == 1 and freeze_backbone:
             print(f"freezing backbone for first {freeze_backbone_epochs} epoch(s)")
         if epoch == freeze_backbone_epochs + 1 and freeze_backbone_epochs > 0:
-            print(f"unfreezing backbone mode={backbone_trainable}")
+            print(f"unfreezing backbone mode={active_backbone_trainable}")
         aux_head_close_epoch = int(model_config.get("aux_head_close_epoch", 0))
         if bool(model_config.get("aux_head", True)) and aux_head_close_epoch > 0:
             model.aux_head_enabled = epoch < aux_head_close_epoch
@@ -898,6 +944,7 @@ def main() -> None:
                 "scale_obj_balance": loss_weights.get("scale_obj_balance"),
                 "classification_loss": str(loss_weights.get("classification_loss", "ce")),
                 "classification_quality_mix": float(loss_weights.get("classification_quality_mix", 0.0)),
+                "classification_focal_gamma": float(loss_weights.get("classification_focal_gamma", 0.0)),
                 "quality_weight": float(loss_weights.get("quality_weight", 0.0)),
             },
             "lr": args.lr,
@@ -906,12 +953,15 @@ def main() -> None:
             "label_smoothing": args.label_smoothing,
             "ema_enabled": ema is not None,
             "freeze_backbone_epochs": freeze_backbone_epochs,
-            "backbone_trainable": backbone_trainable,
+            "backbone_trainable": active_backbone_trainable,
+            "base_backbone_trainable": backbone_trainable,
+            "late_backbone": late_backbone_config,
             "backbone_freeze_bn": freeze_backbone_bn,
             "aux_head_close_epoch": int(model_config.get("aux_head_close_epoch", 0)),
             "epoch": epoch,
             "val_loss": val_logs["loss"] if val_logs is not None else None,
-            "val_map50": metric_logs["map50"] if metric_logs is not None else None,
+            "val_map50": float(metric_logs["map50"]) if metric_logs is not None else None,
+            "per_class_map50": metric_logs.get("per_class") if metric_logs is not None else None,
             "best_conf_threshold": metric_logs["conf_threshold"] if metric_logs is not None else config["inference"]["conf_threshold"],
             "best_nms_threshold": metric_logs["nms_threshold"] if metric_logs is not None else config["inference"]["nms_threshold"],
             "nms_type": config["validation_metric"].get("nms_type", config["inference"].get("nms_type", "soft")),
@@ -929,20 +979,28 @@ def main() -> None:
             continue
         torch.save(state, checkpoint_dir / "last.pth")
 
-        current_score = metric_logs["map50"] if use_map_for_best else val_logs["loss"]
+        current_score = float(metric_logs["map50"]) if use_map_for_best else float(val_logs["loss"])
         improved = current_score > best_score if use_map_for_best else current_score < best_score
         if improved:
             best_score = current_score
+            best_metric_logs = metric_logs
+            best_epoch = epoch
             epochs_without_improvement = 0
             torch.save(state, checkpoint_dir / "best.pth")
             metric_name = "mAP@0.5" if use_map_for_best else "val_loss"
             print(f"saved best checkpoint: {checkpoint_dir / 'best.pth'} ({metric_name}={current_score:.4f})")
+            if use_map_for_best:
+                print_per_class_map("best per-class AP@0.5:", best_metric_logs)
         else:
             epochs_without_improvement += 1
             if early_stopping_patience > 0 and epochs_without_improvement >= early_stopping_patience:
                 metric_name = "mAP@0.5" if use_map_for_best else "val_loss"
                 print(f"early stopping after {early_stopping_patience} epoch(s) without {metric_name} improvement")
                 break
+
+    if use_map_for_best and best_metric_logs is not None:
+        print(f"best validation summary: epoch={best_epoch} mAP@0.5={best_score:.4f}")
+        print_per_class_map("best per-class AP@0.5:", best_metric_logs)
 
 
 if __name__ == "__main__":

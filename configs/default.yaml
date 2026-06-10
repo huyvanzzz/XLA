@@ -18,6 +18,10 @@ warmup_epochs: 3
 label_smoothing: 0.02
 freeze_backbone_epochs: 2
 backbone_trainable: layer4
+late_backbone:
+  enabled: true
+  start_epoch: 55
+  trainable: layer3_layer4
 backbone_freeze_bn: true
 early_stopping_patience: 15
 
@@ -54,6 +58,7 @@ model:
   neck_attention: eca_spatial
   head_attention: eca_spatial
   head_coordconv: false
+  head_refine: true
   head_type: standard
   aux_head: true
   aux_head_close_epoch: 30
@@ -115,6 +120,7 @@ loss_weights:
   noobj_hard_negative_min: 256
   classification_loss: bce
   classification_quality_mix: 0.1
+  classification_focal_gamma: 0.5
   quality_weight: 0.0
 
 inference:

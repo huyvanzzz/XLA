@@ -815,12 +815,54 @@ Config chinh:
 - `loss_weights.classification_loss: bce`
 
 Ket qua:
-- mAP@0.5: 
+- mAP@0.5: 74.95
 - Precision:
 - Recall:
-- Thoi gian train/epoch:
+- Thoi gian train/epoch: 6'
 - Thoi gian mAP validation:
 - Thoi gian predict/evaluate final:
+- Tong epoch train:
+- Epoch tot nhat:
+- Ghi chu:
+
+## v24_resnet50_late_finetune_focal_refine_perclass
+
+Ngay:
+
+Mo ta:
+- Cai tien tiep sau khi user bao version hien tai tot hon mot chut.
+- Giu nen v23: ResNet50 pretrained, YOLOv7 PAN tu cai, `eca_spatial`, quality-aware classification nhe, direct resize 512.
+- Them late backbone fine-tune: 54 epoch dau chi fine-tune `resnet.layer4`; tu epoch 55 moi mo them `resnet.layer3 + layer4`.
+- Ly do: dau train giu feature pretrained on dinh va nhanh, cuoi train sau khi tat strong augmentation thi fine-tune sau hon de tang localization/class separation, giam rui ro overfit som.
+- Them focal nhe cho BCE classification: `classification_focal_gamma: 0.5`, de tap trung hon vao class kho va ranking confidence.
+- Them `head_refine: true` vao main DetectionHead: residual `LargeKernelBlock` depthwise 7x7 + pointwise sau RepConv va truoc `eca_spatial`/prediction.
+- Muc tieu cua head refine: tang receptive field cuc bo o tung scale, giup class/objectness/box logits nhin ngu canh rong hon ma khong them conv full 3x3 nang.
+- Khong doi assignment, khong doi backbone, khong them TTA validation hay grid tune. Thoi gian chi tang o giai do cuoi do late layer3 fine-tune va tang nhe do head refine.
+- Aux head van khong them refine de giai do dau train khong qua nang.
+- `train.py` duoc mo rong de in AP@0.5 tung class khi save best va in lai best per-class summary khi train ket thuc/early stop.
+
+Config chinh:
+- `model.head_refine: true`
+- `model.head_attention: eca_spatial`
+- `model.neck_attention: eca_spatial`
+- `loss_weights.classification_focal_gamma: 0.5`
+- `loss_weights.classification_quality_mix: 0.1`
+- `label_smoothing: 0.02`
+- `late_backbone.enabled: true`
+- `late_backbone.start_epoch: 55`
+- `late_backbone.trainable: layer3_layer4`
+- `backbone_trainable: layer4`
+- `freeze_backbone_epochs: 2`
+- `validation_metric.start_epoch: 30`
+
+Ket qua:
+- mAP@0.5:
+- Precision:
+- Recall:
+- Thoi gian train/epoch truoc epoch 55:
+- Thoi gian train/epoch sau epoch 55:
+- Thoi gian mAP validation:
+- Per-class AP:
 - Tong epoch train:
 - Epoch tot nhat:
 - Ghi chu:
