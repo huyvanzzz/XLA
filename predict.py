@@ -31,7 +31,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max_detections", type=int)
     parser.add_argument("--pre_nms_topk", type=int)
     parser.add_argument("--class_pre_nms_topk", type=int)
-    parser.add_argument("--decode_style", choices=["standard", "yolov7"])
+    parser.add_argument("--decode_style", choices=["standard", "yolov7", "anchor_free"])
     parser.add_argument("--class_activation", choices=["softmax", "sigmoid"])
     parser.add_argument("--quality_score_power", type=float)
     parser.add_argument("--batch_size", type=int, default=16)

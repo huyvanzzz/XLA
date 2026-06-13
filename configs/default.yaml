@@ -1,13 +1,13 @@
-image_size: 512
+image_size: 448
 preserve_aspect: false
 multi_scale:
   enabled: false
 epochs: 80
 batch_size: 24
 val_batch_size: 64
-lr: 0.0001
+lr: 0.00016
 lr_final_factor: 0.05
-backbone_lr_mult: 0.2
+backbone_lr_mult: 0.12
 weight_decay: 0.0005
 num_workers: 4
 channels_last: true
@@ -19,7 +19,7 @@ label_smoothing: 0.02
 freeze_backbone_epochs: 2
 backbone_trainable: layer4
 late_backbone:
-  enabled: true
+  enabled: false
   start_epoch: 55
   trainable: layer3_layer4
 backbone_freeze_bn: true
@@ -45,37 +45,38 @@ augmentation:
   close_strong_aug_epoch: 55
 
 model:
-  backbone: resnet50
+  architecture: anchor_free
+  backbone: convnextv2_nano
   pretrained: true
   base_channels: 40
-  head_channels: 224
-  neck_channels: 224
+  head_channels: 128
+  neck_channels: 128
   attention_heads: 0
-  objectness_prior: 0.01
-  dropout: 0.13
+  objectness_prior: 0.005
+  dropout: 0.05
   elan_depth: 1
-  neck_type: yolov7_pan
-  neck_attention: eca_spatial
-  head_attention: eca_spatial
+  neck_type: convnext_fast_pan
+  neck_attention: eca
+  head_attention: eca
   head_coordconv: false
   head_refine: true
   head_type: standard
-  aux_head: true
+  aux_head: false
   aux_head_close_epoch: 30
   decoupled_head: false
-  cls_head_channels: 160
+  cls_head_channels: 96
   quality_head: false
 
 anchors:
-  auto: true
+  auto: false
   kmeans_iters: 40
   evolve_generations: 0
   anchor_threshold: 4.0
   per_scale: 3
   values:
-  - [[10.0, 13.0], [16.0, 24.0], [32.0, 32.0]]
-  - [[32.0, 48.0], [64.0, 96.0], [96.0, 128.0]]
-  - [[128.0, 160.0], [220.0, 260.0], [320.0, 320.0]]
+  - [[1.0, 1.0]]
+  - [[1.0, 1.0]]
+  - [[1.0, 1.0]]
 
 class_weights:
   enabled: true
@@ -100,15 +101,15 @@ loss_weights:
   obj_weight: 1.0
   noobj_weight: 0.25
   cls_weight: 1.0
-  iou_weight: 6.0
+  iou_weight: 5.0
   aux_weight: 0.4
   objectness_focal_gamma: 1.5
   iou_aware_objectness: true
   assignment_strategy: legacy
-  positive_anchor_topk: 3
+  positive_anchor_topk: 10
   ignore_anchor_iou: 0.5
   objectness_iou_mix: 1.0
-  decode_style: yolov7
+  decode_style: anchor_free
   target_offsets: true
   target_offset_bias: 0.5
   scale_obj_balance: [4.0, 1.0, 0.4]
@@ -122,34 +123,36 @@ loss_weights:
   classification_quality_mix: 0.1
   classification_focal_gamma: 0.5
   quality_weight: 0.0
+  varifocal_alpha: 0.75
+  varifocal_gamma: 2.0
 
 inference:
   conf_threshold: 0.08
   class_conf_thresholds: {}
-  tta_hflip: true
+  tta_hflip: false
   nms_threshold: 0.5
   nms_type: diou
-  merge_nms: true
+  merge_nms: false
   max_detections: 100
-  pre_nms_topk: 300
-  class_pre_nms_topk: 100
-  decode_style: yolov7
+  pre_nms_topk: 500
+  class_pre_nms_topk: 120
+  decode_style: anchor_free
   class_activation: sigmoid
   quality_score_power: 0.0
 
 validation_metric:
   enabled: true
-  start_epoch: 30
+  start_epoch: 1
   every: 1
   conf_threshold: 0.08
   class_conf_thresholds: {}
   tta_hflip: false
   nms_threshold: 0.5
   nms_type: diou
-  merge_nms: true
-  pre_nms_topk: 300
-  class_pre_nms_topk: 100
-  decode_style: yolov7
+  merge_nms: false
+  pre_nms_topk: 500
+  class_pre_nms_topk: 120
+  decode_style: anchor_free
   class_activation: sigmoid
   quality_score_power: 0.0
   tune: false

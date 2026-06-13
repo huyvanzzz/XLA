@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import time
 from copy import deepcopy
 from contextlib import nullcontext
 from collections import Counter
@@ -17,7 +18,7 @@ from models.tiny_detector import TinyDetector
 from utils.config import get_anchors, load_config
 from utils.dataset import DetectionDataset, collate_fn, load_classes
 from utils.inference import decode_predictions
-from utils.loss import YoloLoss
+from utils.loss import AnchorFreeLoss, YoloLoss
 from utils.box_ops import wh_iou
 
 
@@ -446,7 +447,7 @@ def set_backbone_batchnorm_eval(model: TinyDetector) -> None:
 def run_epoch(
     model: TinyDetector,
     loader: DataLoader,
-    criterion: YoloLoss,
+    criterion: torch.nn.Module,
     device: torch.device,
     optimizer: torch.optim.Optimizer | None = None,
     scaler: torch.amp.GradScaler | None = None,
@@ -635,7 +636,10 @@ def main() -> None:
             anchor_threshold=float(config["anchors"].get("anchor_threshold", 4.0)),
             preserve_aspect=preserve_aspect,
         )
-        print(f"auto anchors: {anchors}")
+        if str(model_config.get("architecture", "yolo")) == "anchor_free":
+            anchors = [[(1.0, 1.0)], [(1.0, 1.0)], [(1.0, 1.0)]]
+        else:
+            print(f"auto anchors: {anchors}")
     class_weights = None
     if config["class_weights"]["enabled"]:
         class_weights = compute_class_weights(args.train_data, classes)
@@ -703,39 +707,54 @@ def main() -> None:
         print(f"scale objectness bias logits: {[round(v, 4) for v in objectness_logits]}")
     if channels_last:
         model = model.to(memory_format=torch.channels_last)
-    criterion = YoloLoss(
-        anchors,
-        image_size=args.image_size,
-        num_classes=len(classes),
-        box_weight=args.box_weight,
-        obj_weight=args.obj_weight,
-        noobj_weight=args.noobj_weight,
-        cls_weight=args.cls_weight,
-        iou_weight=args.iou_weight,
-        aux_weight=args.aux_weight,
-        objectness_focal_gamma=args.objectness_focal_gamma,
-        iou_aware_objectness=args.iou_aware_objectness,
-        class_weights=class_weights,
-        label_smoothing=args.label_smoothing,
-        positive_anchor_topk=args.positive_anchor_topk,
-        ignore_anchor_iou=args.ignore_anchor_iou,
-        objectness_iou_mix=args.objectness_iou_mix,
-        noobj_hard_negative_ratio=args.noobj_hard_negative_ratio,
-        noobj_hard_negative_min=args.noobj_hard_negative_min,
-        assignment_strategy=str(loss_weights.get("assignment_strategy", "legacy")),
-        task_aligned_alpha=float(loss_weights.get("task_aligned_alpha", 0.5)),
-        task_aligned_beta=float(loss_weights.get("task_aligned_beta", 6.0)),
-        task_aligned_center_radius=float(loss_weights.get("task_aligned_center_radius", 2.5)),
-        task_aligned_min_iou=float(loss_weights.get("task_aligned_min_iou", 0.05)),
-        decode_style=str(loss_weights.get("decode_style", "standard")),
-        target_offsets=bool(loss_weights.get("target_offsets", False)),
-        target_offset_bias=float(loss_weights.get("target_offset_bias", 0.5)),
-        scale_obj_balance=loss_weights.get("scale_obj_balance"),
-        classification_loss=str(loss_weights.get("classification_loss", "ce")),
-        classification_quality_mix=float(loss_weights.get("classification_quality_mix", 0.0)),
-        classification_focal_gamma=float(loss_weights.get("classification_focal_gamma", 0.0)),
-        quality_weight=float(loss_weights.get("quality_weight", 0.0)),
-    ).to(device)
+    if str(model_config.get("architecture", "yolo")) == "anchor_free":
+        criterion = AnchorFreeLoss(
+            image_size=args.image_size,
+            num_classes=len(classes),
+            cls_weight=args.cls_weight,
+            iou_weight=args.iou_weight,
+            task_aligned_alpha=float(loss_weights.get("task_aligned_alpha", 0.5)),
+            task_aligned_beta=float(loss_weights.get("task_aligned_beta", 6.0)),
+            task_aligned_center_radius=float(loss_weights.get("task_aligned_center_radius", 2.5)),
+            positive_anchor_topk=int(loss_weights.get("positive_anchor_topk", 10)),
+            class_weights=class_weights,
+            varifocal_alpha=float(loss_weights.get("varifocal_alpha", 0.75)),
+            varifocal_gamma=float(loss_weights.get("varifocal_gamma", 2.0)),
+        ).to(device)
+    else:
+        criterion = YoloLoss(
+            anchors,
+            image_size=args.image_size,
+            num_classes=len(classes),
+            box_weight=args.box_weight,
+            obj_weight=args.obj_weight,
+            noobj_weight=args.noobj_weight,
+            cls_weight=args.cls_weight,
+            iou_weight=args.iou_weight,
+            aux_weight=args.aux_weight,
+            objectness_focal_gamma=args.objectness_focal_gamma,
+            iou_aware_objectness=args.iou_aware_objectness,
+            class_weights=class_weights,
+            label_smoothing=args.label_smoothing,
+            positive_anchor_topk=args.positive_anchor_topk,
+            ignore_anchor_iou=args.ignore_anchor_iou,
+            objectness_iou_mix=args.objectness_iou_mix,
+            noobj_hard_negative_ratio=args.noobj_hard_negative_ratio,
+            noobj_hard_negative_min=args.noobj_hard_negative_min,
+            assignment_strategy=str(loss_weights.get("assignment_strategy", "legacy")),
+            task_aligned_alpha=float(loss_weights.get("task_aligned_alpha", 0.5)),
+            task_aligned_beta=float(loss_weights.get("task_aligned_beta", 6.0)),
+            task_aligned_center_radius=float(loss_weights.get("task_aligned_center_radius", 2.5)),
+            task_aligned_min_iou=float(loss_weights.get("task_aligned_min_iou", 0.05)),
+            decode_style=str(loss_weights.get("decode_style", "standard")),
+            target_offsets=bool(loss_weights.get("target_offsets", False)),
+            target_offset_bias=float(loss_weights.get("target_offset_bias", 0.5)),
+            scale_obj_balance=loss_weights.get("scale_obj_balance"),
+            classification_loss=str(loss_weights.get("classification_loss", "ce")),
+            classification_quality_mix=float(loss_weights.get("classification_quality_mix", 0.0)),
+            classification_focal_gamma=float(loss_weights.get("classification_focal_gamma", 0.0)),
+            quality_weight=float(loss_weights.get("quality_weight", 0.0)),
+        ).to(device)
     decay_backbone = []
     decay_detector = []
     no_decay_backbone = []
@@ -838,6 +857,7 @@ def main() -> None:
                 aux_head_closed = True
                 print(f"closing auxiliary detection heads at epoch {epoch}")
 
+        train_start = time.perf_counter()
         train_logs = run_epoch(
             model,
             train_loader,
@@ -853,6 +873,7 @@ def main() -> None:
             freeze_backbone_bn=freeze_backbone_bn,
             channels_last=channels_last,
         )
+        train_time = time.perf_counter() - train_start
         eval_model = ema.module if ema is not None else model
         criterion.image_size = args.image_size
         val_logs = None
@@ -870,7 +891,7 @@ def main() -> None:
                 )
         scheduler.step()
 
-        log_line = f"epoch {epoch:03d}/{args.epochs} train_loss={train_logs['loss']:.4f}"
+        log_line = f"epoch {epoch:03d}/{args.epochs} train_loss={train_logs['loss']:.4f} train_time={train_time:.1f}s"
         if val_logs is not None:
             log_line += (
                 f" val_loss={val_logs['loss']:.4f} "
@@ -910,6 +931,7 @@ def main() -> None:
                 f"conf={metric_logs['conf_threshold']:.2f} "
                 f"nms={metric_logs['nms_threshold']:.2f}"
             )
+            print_per_class_map("per-class AP@0.5:", metric_logs)
 
         state = {
             "model": model.state_dict(),

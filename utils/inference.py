@@ -69,21 +69,32 @@ def decode_predictions(
     all_boxes = []
     all_scores = []
     all_labels = []
-    for scale_pred, scale_anchors in zip(preds, anchors):
+    for idx, scale_pred in enumerate(preds):
+        scale_anchors = anchors[idx] if idx < len(anchors) else [(1.0, 1.0)]
         if scale_pred.dim() == 5:
             scale_pred = scale_pred[0]
-        boxes, scores, labels = _decode_scale(
-            scale_pred,
-            classes,
-            scale_anchors,
-            image_size,
-            orig_width,
-            orig_height,
-            preserve_aspect=preserve_aspect,
-            decode_style=decode_style,
-            class_activation=class_activation,
-            quality_score_power=quality_score_power,
-        )
+        if decode_style == "anchor_free":
+            boxes, scores, labels = _decode_anchor_free_scale(
+                scale_pred,
+                classes,
+                image_size,
+                orig_width,
+                orig_height,
+                preserve_aspect=preserve_aspect,
+            )
+        else:
+            boxes, scores, labels = _decode_scale(
+                scale_pred,
+                classes,
+                scale_anchors,
+                image_size,
+                orig_width,
+                orig_height,
+                preserve_aspect=preserve_aspect,
+                decode_style=decode_style,
+                class_activation=class_activation,
+                quality_score_power=quality_score_power,
+            )
         all_boxes.append(boxes)
         all_scores.append(scores)
         all_labels.append(labels)
@@ -275,6 +286,55 @@ def _decode_scale(
         quality_scores = pred[..., quality_index].sigmoid().reshape(-1)
         scores = scores * quality_scores.clamp(min=1e-6).pow(float(quality_score_power))
 
+    if preserve_aspect:
+        scale = min(image_size / orig_width, image_size / orig_height)
+        new_w = round(orig_width * scale)
+        new_h = round(orig_height * scale)
+        pad_x = (image_size - new_w) / 2.0
+        pad_y = (image_size - new_h) / 2.0
+        boxes[:, [0, 2]] = (boxes[:, [0, 2]] - pad_x) / scale
+        boxes[:, [1, 3]] = (boxes[:, [1, 3]] - pad_y) / scale
+    else:
+        boxes[:, [0, 2]] *= orig_width / image_size
+        boxes[:, [1, 3]] *= orig_height / image_size
+    boxes = clip_boxes(boxes, orig_width, orig_height)
+    return boxes, scores, labels
+
+
+def _decode_anchor_free_scale(
+    pred: torch.Tensor,
+    classes: list[str],
+    image_size: int,
+    orig_width: int,
+    orig_height: int,
+    preserve_aspect: bool = True,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    device = pred.device
+    if pred.dim() == 4:
+        pred = pred[..., 0, :]
+    grid_h, grid_w, _ = pred.shape
+    stride_x = image_size / grid_w
+    stride_y = image_size / grid_h
+    yy, xx = torch.meshgrid(
+        torch.arange(grid_h, device=device),
+        torch.arange(grid_w, device=device),
+        indexing="ij",
+    )
+    center_x = (xx.float() + 0.5) * stride_x
+    center_y = (yy.float() + 0.5) * stride_y
+    distances = torch.nn.functional.softplus(pred[..., :4])
+    distances = distances * torch.tensor([stride_x, stride_y, stride_x, stride_y], device=device, dtype=pred.dtype)
+    boxes = torch.stack(
+        [
+            center_x - distances[..., 0],
+            center_y - distances[..., 1],
+            center_x + distances[..., 2],
+            center_y + distances[..., 3],
+        ],
+        dim=-1,
+    ).reshape(-1, 4)
+    class_scores, labels = pred[..., 4 : 4 + len(classes)].sigmoid().reshape(-1, len(classes)).max(dim=1)
+    scores = class_scores
     if preserve_aspect:
         scale = min(image_size / orig_width, image_size / orig_height)
         new_w = round(orig_width * scale)

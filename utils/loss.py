@@ -7,6 +7,173 @@ from torch import nn
 from utils.box_ops import bbox_ciou, box_iou, wh_iou
 
 
+class AnchorFreeLoss(nn.Module):
+    """Quality-aware anchor-free loss inspired by FCOS/GFL/VFL style detectors."""
+
+    def __init__(
+        self,
+        image_size: int,
+        num_classes: int,
+        cls_weight: float = 1.0,
+        iou_weight: float = 5.0,
+        task_aligned_alpha: float = 0.5,
+        task_aligned_beta: float = 6.0,
+        task_aligned_center_radius: float = 2.5,
+        positive_anchor_topk: int = 10,
+        class_weights: list[float] | None = None,
+        varifocal_alpha: float = 0.75,
+        varifocal_gamma: float = 2.0,
+    ) -> None:
+        super().__init__()
+        self.image_size = int(image_size)
+        self.num_classes = int(num_classes)
+        self.cls_weight = float(cls_weight)
+        self.iou_weight = float(iou_weight)
+        self.task_aligned_alpha = float(task_aligned_alpha)
+        self.task_aligned_beta = float(task_aligned_beta)
+        self.task_aligned_center_radius = float(task_aligned_center_radius)
+        self.positive_anchor_topk = max(1, int(positive_anchor_topk))
+        self.varifocal_alpha = float(varifocal_alpha)
+        self.varifocal_gamma = float(varifocal_gamma)
+        if class_weights is not None:
+            self.register_buffer("class_weights", torch.tensor(class_weights, dtype=torch.float32))
+        else:
+            self.class_weights = None
+
+    def forward(
+        self,
+        pred: dict[str, list[torch.Tensor]] | list[torch.Tensor],
+        targets: list[dict[str, torch.Tensor]],
+    ) -> tuple[torch.Tensor, dict[str, float]]:
+        preds = pred["main"] if isinstance(pred, dict) else pred
+        boxes, cls_logits, centers, strides = self._flatten_predictions(preds)
+        batch_size, num_candidates, _ = boxes.shape
+        device = boxes.device
+
+        cls_targets = cls_logits.new_zeros((batch_size, num_candidates, self.num_classes))
+        box_targets = boxes.new_zeros((batch_size, num_candidates, 4))
+        positive = torch.zeros((batch_size, num_candidates), dtype=torch.bool, device=device)
+        assigned_quality = boxes.new_zeros((batch_size, num_candidates))
+
+        for batch_idx, target in enumerate(targets):
+            gt_boxes = target["boxes"].to(device)
+            gt_labels = target["labels"].to(device)
+            if gt_boxes.numel() == 0:
+                continue
+            ious = box_iou(boxes[batch_idx], gt_boxes).clamp(min=0.0)
+            gt_centers = (gt_boxes[:, :2] + gt_boxes[:, 2:]) * 0.5
+            in_box = (
+                (centers[:, None, 0] >= gt_boxes[None, :, 0])
+                & (centers[:, None, 0] <= gt_boxes[None, :, 2])
+                & (centers[:, None, 1] >= gt_boxes[None, :, 1])
+                & (centers[:, None, 1] <= gt_boxes[None, :, 3])
+            )
+            center_delta = (centers[:, None, :] - gt_centers[None, :, :]).abs()
+            center_limit = strides[:, None, :] * self.task_aligned_center_radius
+            in_center = (center_delta[..., 0] <= center_limit[..., 0]) & (center_delta[..., 1] <= center_limit[..., 1])
+            candidate_mask = in_box | in_center
+            matched_scores = cls_logits[batch_idx].sigmoid()[:, gt_labels]
+            metric = matched_scores.clamp(min=1e-9).pow(self.task_aligned_alpha) * ious.pow(self.task_aligned_beta)
+            metric = torch.where(candidate_mask, metric, metric.new_full(metric.shape, -1.0))
+
+            assigned_gt = torch.full((num_candidates,), -1, dtype=torch.long, device=device)
+            assigned_metric = torch.full((num_candidates,), -1.0, device=device)
+            assigned_iou = torch.zeros((num_candidates,), device=device)
+            topk = min(self.positive_anchor_topk, num_candidates)
+            for obj_idx in range(gt_boxes.shape[0]):
+                values, indices = metric[:, obj_idx].topk(topk)
+                keep = values > 0
+                if not keep.any():
+                    continue
+                indices = indices[keep]
+                values = values[keep]
+                replace = values > assigned_metric[indices]
+                if replace.any():
+                    chosen = indices[replace]
+                    assigned_gt[chosen] = obj_idx
+                    assigned_metric[chosen] = values[replace]
+                    assigned_iou[chosen] = ious[chosen, obj_idx]
+
+            pos_idx = (assigned_gt >= 0).nonzero(as_tuple=False).flatten()
+            if pos_idx.numel() == 0:
+                continue
+            positive[batch_idx, pos_idx] = True
+            gt_idx = assigned_gt[pos_idx]
+            quality = assigned_iou[pos_idx].detach().clamp(0.05, 1.0)
+            labels = gt_labels[gt_idx]
+            cls_targets[batch_idx, pos_idx, labels] = quality
+            box_targets[batch_idx, pos_idx] = gt_boxes[gt_idx]
+            assigned_quality[batch_idx, pos_idx] = quality
+
+        normalizer = positive.sum().clamp(min=1).to(cls_logits.dtype)
+        cls_loss = self._varifocal_loss(cls_logits, cls_targets).sum() / normalizer
+        if positive.any():
+            pred_pos = boxes[positive]
+            target_pos = box_targets[positive]
+            ciou = bbox_ciou(pred_pos, target_pos).clamp(min=-1.0, max=1.0)
+            weight = assigned_quality[positive].clamp(min=0.05)
+            iou_loss = ((1.0 - ciou) * weight).sum() / weight.sum().clamp(min=1e-6)
+            box_loss = iou_loss
+        else:
+            iou_loss = boxes.sum() * 0.0
+            box_loss = iou_loss
+        loss = self.cls_weight * cls_loss + self.iou_weight * iou_loss
+        return loss, {
+            "loss": float(loss.detach().cpu()),
+            "box_loss": float(box_loss.detach().cpu()),
+            "iou_loss": float(iou_loss.detach().cpu()),
+            "obj_loss": 0.0,
+            "noobj_loss": 0.0,
+            "cls_loss": float(cls_loss.detach().cpu()),
+            "quality_loss": 0.0,
+        }
+
+    def _flatten_predictions(self, preds: list[torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        all_boxes = []
+        all_logits = []
+        all_centers = []
+        all_strides = []
+        for pred in preds:
+            b, h, w, _, d = pred.shape
+            device = pred.device
+            stride_x = self.image_size / w
+            stride_y = self.image_size / h
+            yy, xx = torch.meshgrid(torch.arange(h, device=device), torch.arange(w, device=device), indexing="ij")
+            centers = torch.stack([(xx.float() + 0.5) * stride_x, (yy.float() + 0.5) * stride_y], dim=-1).reshape(-1, 2)
+            stride = torch.empty_like(centers)
+            stride[:, 0] = stride_x
+            stride[:, 1] = stride_y
+            raw = pred[..., 0, :]
+            distances = F.softplus(raw[..., :4])
+            scale = torch.tensor([stride_x, stride_y, stride_x, stride_y], dtype=pred.dtype, device=device)
+            distances = distances * scale
+            center_b = centers.view(1, h, w, 2)
+            boxes = torch.stack(
+                [
+                    center_b[..., 0] - distances[..., 0],
+                    center_b[..., 1] - distances[..., 1],
+                    center_b[..., 0] + distances[..., 2],
+                    center_b[..., 1] + distances[..., 3],
+                ],
+                dim=-1,
+            ).reshape(b, -1, 4)
+            boxes[..., 0::2].clamp_(0, self.image_size)
+            boxes[..., 1::2].clamp_(0, self.image_size)
+            all_boxes.append(boxes)
+            all_logits.append(raw[..., 4 : 4 + self.num_classes].reshape(b, -1, self.num_classes))
+            all_centers.append(centers)
+            all_strides.append(stride)
+        return torch.cat(all_boxes, dim=1), torch.cat(all_logits, dim=1), torch.cat(all_centers, dim=0), torch.cat(all_strides, dim=0)
+
+    def _varifocal_loss(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        pred_score = logits.sigmoid()
+        focal_weight = self.varifocal_alpha * pred_score.pow(self.varifocal_gamma) * (targets <= 0).to(logits.dtype) + targets
+        loss = F.binary_cross_entropy_with_logits(logits, targets, reduction="none") * focal_weight
+        if self.class_weights is not None:
+            loss = loss * self.class_weights.to(logits.device, logits.dtype).view(1, 1, -1)
+        return loss
+
+
 class YoloLoss(nn.Module):
     """Multi-scale YOLO loss with explicit components and auxiliary-head support."""
 

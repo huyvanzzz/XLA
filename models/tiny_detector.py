@@ -50,6 +50,103 @@ class ConvNeXtBlock(nn.Module):
         return x + self.layer_scale * y
 
 
+class GRN(nn.Module):
+    """Global Response Normalization used by ConvNeXt V2."""
+
+    def __init__(self, channels: int) -> None:
+        super().__init__()
+        self.gamma = nn.Parameter(torch.zeros(1, 1, 1, channels))
+        self.beta = nn.Parameter(torch.zeros(1, 1, 1, channels))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        gx = torch.norm(x, p=2, dim=(1, 2), keepdim=True)
+        nx = gx / gx.mean(dim=-1, keepdim=True).clamp(min=1e-6)
+        return self.gamma * (x * nx) + self.beta + x
+
+
+class ConvNeXtV2Block(nn.Module):
+    def __init__(self, channels: int) -> None:
+        super().__init__()
+        self.dwconv = nn.Conv2d(channels, channels, kernel_size=7, padding=3, groups=channels)
+        self.norm = nn.LayerNorm(channels, eps=1e-6)
+        self.pwconv1 = nn.Linear(channels, 4 * channels)
+        self.act = nn.GELU()
+        self.grn = GRN(4 * channels)
+        self.pwconv2 = nn.Linear(4 * channels, channels)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        identity = x
+        x = self.dwconv(x)
+        x = x.permute(0, 2, 3, 1)
+        x = self.norm(x)
+        x = self.pwconv1(x)
+        x = self.act(x)
+        x = self.grn(x)
+        x = self.pwconv2(x)
+        x = x.permute(0, 3, 1, 2)
+        return identity + x
+
+
+class ConvNeXtV2Backbone(nn.Module):
+    WEIGHTS = {
+        "convnextv2_pico": "https://dl.fbaipublicfiles.com/convnext/convnextv2/im1k/convnextv2_pico_1k_224_ema.pt",
+        "convnextv2_nano": "https://dl.fbaipublicfiles.com/convnext/convnextv2/im22k/convnextv2_nano_22k_224_ema.pt",
+    }
+    CONFIGS = {
+        "convnextv2_pico": {"depths": [2, 2, 6, 2], "dims": [64, 128, 256, 512]},
+        "convnextv2_nano": {"depths": [2, 2, 8, 2], "dims": [80, 160, 320, 640]},
+    }
+
+    def __init__(self, variant: str = "convnextv2_nano", pretrained: bool = True) -> None:
+        super().__init__()
+        if variant not in self.CONFIGS:
+            raise ValueError(f"Unsupported ConvNeXt V2 variant: {variant}")
+        config = self.CONFIGS[variant]
+        dims = config["dims"]
+        depths = config["depths"]
+
+        self.stem = nn.Sequential(nn.Conv2d(3, dims[0], kernel_size=4, stride=4), LayerNorm2d(dims[0], eps=1e-6))
+        self.stage1 = nn.Sequential(*[ConvNeXtV2Block(dims[0]) for _ in range(depths[0])])
+        self.down1 = nn.Sequential(LayerNorm2d(dims[0], eps=1e-6), nn.Conv2d(dims[0], dims[1], kernel_size=2, stride=2))
+        self.stage2 = nn.Sequential(*[ConvNeXtV2Block(dims[1]) for _ in range(depths[1])])
+        self.down2 = nn.Sequential(LayerNorm2d(dims[1], eps=1e-6), nn.Conv2d(dims[1], dims[2], kernel_size=2, stride=2))
+        self.stage3 = nn.Sequential(*[ConvNeXtV2Block(dims[2]) for _ in range(depths[2])])
+        self.down3 = nn.Sequential(LayerNorm2d(dims[2], eps=1e-6), nn.Conv2d(dims[2], dims[3], kernel_size=2, stride=2))
+        self.stage4 = nn.Sequential(*[ConvNeXtV2Block(dims[3]) for _ in range(depths[3])])
+
+        if pretrained:
+            state = torch.hub.load_state_dict_from_url(self.WEIGHTS[variant], progress=True, map_location="cpu")
+            if isinstance(state, dict) and "model" in state:
+                state = state["model"]
+            self.load_state_dict(self._convert_state(state), strict=False)
+
+    def _convert_state(self, state: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+        converted: dict[str, torch.Tensor] = {}
+        for key, value in state.items():
+            key = key.removeprefix("module.").removeprefix("model.")
+            if key.startswith(("head.", "norm.")):
+                continue
+            key = key.replace("downsample_layers.0.", "stem.")
+            key = key.replace("downsample_layers.1.0.", "down1.0.")
+            key = key.replace("downsample_layers.1.1.", "down1.1.")
+            key = key.replace("downsample_layers.2.0.", "down2.0.")
+            key = key.replace("downsample_layers.2.1.", "down2.1.")
+            key = key.replace("downsample_layers.3.0.", "down3.0.")
+            key = key.replace("downsample_layers.3.1.", "down3.1.")
+            for idx in range(4):
+                key = key.replace(f"stages.{idx}.", f"stage{idx + 1}.")
+            key = key.replace(".grn.gamma", ".grn.gamma").replace(".grn.beta", ".grn.beta")
+            converted[key] = value
+        return converted
+
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        x = self.stage1(self.stem(x))
+        p3 = self.stage2(self.down1(x))
+        p4 = self.stage3(self.down2(p3))
+        p5 = self.stage4(self.down3(p4))
+        return p3, p4, p5
+
+
 class ConvNeXtBackbone(nn.Module):
     WEIGHTS = {
         "convnext_small": "https://download.pytorch.org/models/convnext_small-0c510722.pth",
@@ -974,6 +1071,61 @@ class DecoupledDetectionHead(nn.Module):
             bias[:, 4].fill_(float(objectness_logit))
 
 
+class AnchorFreeHead(nn.Module):
+    """Light decoupled anchor-free head with quality-aware class logits."""
+
+    def __init__(
+        self,
+        in_channels: int,
+        head_channels: int,
+        cls_channels: int,
+        num_classes: int,
+        dropout: float,
+        attention: str = "eca",
+    ) -> None:
+        super().__init__()
+        self.num_classes = num_classes
+        self.reg_tower = nn.Sequential(
+            ConvBNAct(in_channels, head_channels, kernel_size=3),
+            nn.Conv2d(head_channels, head_channels, kernel_size=3, padding=1, groups=head_channels, bias=False),
+            nn.BatchNorm2d(head_channels),
+            nn.SiLU(inplace=True),
+            build_attention(head_channels, attention),
+            nn.Dropout2d(dropout) if dropout > 0 else nn.Identity(),
+            nn.Conv2d(head_channels, 4, kernel_size=1),
+        )
+        self.cls_tower = nn.Sequential(
+            ConvBNAct(in_channels, cls_channels, kernel_size=1),
+            nn.Conv2d(cls_channels, cls_channels, kernel_size=3, padding=1, groups=cls_channels, bias=False),
+            nn.BatchNorm2d(cls_channels),
+            nn.SiLU(inplace=True),
+            build_attention(cls_channels, attention),
+            nn.Dropout2d(dropout * 0.5) if dropout > 0 else nn.Identity(),
+            nn.Conv2d(cls_channels, num_classes, kernel_size=1),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        reg = self.reg_tower(x)
+        cls = self.cls_tower(x)
+        y = torch.cat([reg, cls], dim=1)
+        return y.permute(0, 2, 3, 1).unsqueeze(3).contiguous()
+
+    def initialize_biases(self, objectness_prior: float = 0.01) -> None:
+        final_cls = self.cls_tower[-1]
+        if isinstance(final_cls, nn.Conv2d) and final_cls.bias is not None:
+            prior = min(max(float(objectness_prior), 1e-4), 1.0 - 1e-4)
+            with torch.no_grad():
+                final_cls.bias.fill_(math.log(prior / (1.0 - prior)))
+
+    def initialize_class_biases(self, class_priors: torch.Tensor) -> None:
+        final_cls = self.cls_tower[-1]
+        if not isinstance(final_cls, nn.Conv2d) or final_cls.bias is None:
+            return
+        priors = class_priors.to(final_cls.bias.device, final_cls.bias.dtype).clamp(min=1e-6)
+        with torch.no_grad():
+            final_cls.bias.copy_(torch.log(priors * 0.01 / priors.mean().clamp(min=1e-6)).clamp(min=-8.0, max=-2.0))
+
+
 class TinyDetector(nn.Module):
     """YOLO-style detector with configurable backbone, RepConv heads, aux heads, and 3 scales."""
 
@@ -1000,13 +1152,16 @@ class TinyDetector(nn.Module):
         backbone: str = "resnet50",
         pretrained: bool = True,
         quality_head: bool = False,
+        architecture: str = "yolo",
         **_: object,
     ) -> None:
         super().__init__()
         self.num_classes = num_classes
+        self.architecture = str(architecture)
+        self.anchor_free = self.architecture == "anchor_free"
         self.quality_head = bool(quality_head)
         self.quality_index = 5 + num_classes if self.quality_head else None
-        self.pred_dim = 5 + num_classes + (1 if self.quality_head else 0)
+        self.pred_dim = (4 + num_classes) if self.anchor_free else 5 + num_classes + (1 if self.quality_head else 0)
         if isinstance(num_anchors, int):
             self.num_anchors = [num_anchors, num_anchors, num_anchors]
         else:
@@ -1018,6 +1173,9 @@ class TinyDetector(nn.Module):
         elif backbone in {"convnext_small", "convnext_base"}:
             self.convnext = ConvNeXtBackbone(variant=backbone, pretrained=pretrained)
             feature_channels = ConvNeXtBackbone.CONFIGS[backbone]["dims"][1:]
+        elif backbone in {"convnextv2_pico", "convnextv2_nano"}:
+            self.convnext = ConvNeXtV2Backbone(variant=backbone, pretrained=pretrained)
+            feature_channels = ConvNeXtV2Backbone.CONFIGS[backbone]["dims"][1:]
         elif backbone == "eelan":
             c1 = base_channels
             c2 = base_channels * 2
@@ -1049,6 +1207,20 @@ class TinyDetector(nn.Module):
             self.neck = FPNPANNeck(feature_channels, out_channels=neck_channels, attention_heads=attention_heads)
         feature_channels = [neck_channels, neck_channels, neck_channels]
         cls_channels = int(cls_head_channels or max(head_channels // 2, 64))
+        if self.anchor_free:
+            self.main_heads = nn.ModuleList(
+                [
+                    AnchorFreeHead(feature_channels[0], head_channels, cls_channels, num_classes, dropout, attention=str(head_attention)),
+                    AnchorFreeHead(feature_channels[1], head_channels, cls_channels, num_classes, dropout, attention=str(head_attention)),
+                    AnchorFreeHead(feature_channels[2], head_channels, cls_channels, num_classes, dropout, attention=str(head_attention)),
+                ]
+            )
+            self.aux_head_enabled = False
+            self.aux_heads = nn.ModuleList()
+            for head in self.main_heads:
+                head.initialize_biases(objectness_prior=objectness_prior)
+            return
+
         if head_type == "efficient_decoupled":
             head_cls = EfficientDecoupledHead
         elif decoupled_head:
@@ -1138,7 +1310,7 @@ class TinyDetector(nn.Module):
     def forward(self, x: torch.Tensor) -> dict[str, list[torch.Tensor]]:
         if self.backbone_name == "resnet50":
             p3, p4, p5 = self.resnet(x)
-        elif self.backbone_name.startswith("convnext_"):
+        elif self.backbone_name.startswith("convnext"):
             p3, p4, p5 = self.convnext(x)
         else:
             x = self.stem(x)
@@ -1147,6 +1319,8 @@ class TinyDetector(nn.Module):
             p5 = self.elan5(self.down5(p4))
         features = self.neck((p3, p4, p5))
         main = [head(feature) for head, feature in zip(self.main_heads, features)]
+        if self.anchor_free:
+            return {"main": main, "aux": [], "format": "anchor_free"}
         if self.training and self.aux_head_enabled:
             aux = [head(feature) for head, feature in zip(self.aux_heads, features)]
         else:
