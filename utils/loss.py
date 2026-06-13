@@ -101,9 +101,9 @@ class AnchorFreeLoss(nn.Module):
             gt_idx = assigned_gt[pos_idx]
             quality = assigned_iou[pos_idx].detach().clamp(0.05, 1.0)
             labels = gt_labels[gt_idx]
-            cls_targets[batch_idx, pos_idx, labels] = quality
-            box_targets[batch_idx, pos_idx] = gt_boxes[gt_idx]
-            assigned_quality[batch_idx, pos_idx] = quality
+            cls_targets[batch_idx, pos_idx, labels] = quality.to(cls_targets.dtype)
+            box_targets[batch_idx, pos_idx] = gt_boxes[gt_idx].to(box_targets.dtype)
+            assigned_quality[batch_idx, pos_idx] = quality.to(assigned_quality.dtype)
 
         normalizer = positive.sum().clamp(min=1).to(cls_logits.dtype)
         cls_loss = self._varifocal_loss(cls_logits, cls_targets).sum() / normalizer
