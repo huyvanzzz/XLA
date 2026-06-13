@@ -71,6 +71,7 @@ DEFAULT_CONFIG = {
         "decoupled_head": False,
         "cls_head_channels": 96,
         "quality_head": False,
+        "reg_initial_distance": 4.0,
     },
     "anchors": {
         "auto": False,
@@ -117,9 +118,10 @@ DEFAULT_CONFIG = {
         "quality_weight": 0.0,
         "varifocal_alpha": 0.75,
         "varifocal_gamma": 2.0,
+        "assignment_warmup_epochs": 5,
     },
     "inference": {
-        "conf_threshold": 0.08,
+        "conf_threshold": 0.01,
         "class_conf_thresholds": {},
         "tta_hflip": False,
         "nms_threshold": 0.5,
@@ -136,7 +138,7 @@ DEFAULT_CONFIG = {
         "enabled": True,
         "start_epoch": 1,
         "every": 1,
-        "conf_threshold": 0.08,
+        "conf_threshold": 0.01,
         "class_conf_thresholds": {},
         "tta_hflip": False,
         "nms_threshold": 0.5,

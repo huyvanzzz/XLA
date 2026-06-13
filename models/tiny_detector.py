@@ -1082,9 +1082,11 @@ class AnchorFreeHead(nn.Module):
         num_classes: int,
         dropout: float,
         attention: str = "eca",
+        initial_distance: float = 4.0,
     ) -> None:
         super().__init__()
         self.num_classes = num_classes
+        self.initial_distance = max(float(initial_distance), 0.1)
         self.reg_tower = nn.Sequential(
             ConvBNAct(in_channels, head_channels, kernel_size=3),
             nn.Conv2d(head_channels, head_channels, kernel_size=3, padding=1, groups=head_channels, bias=False),
@@ -1111,7 +1113,12 @@ class AnchorFreeHead(nn.Module):
         return y.permute(0, 2, 3, 1).unsqueeze(3).contiguous()
 
     def initialize_biases(self, objectness_prior: float = 0.01) -> None:
+        final_reg = self.reg_tower[-1]
         final_cls = self.cls_tower[-1]
+        if isinstance(final_reg, nn.Conv2d) and final_reg.bias is not None:
+            reg_bias = math.log(math.expm1(self.initial_distance))
+            with torch.no_grad():
+                final_reg.bias.fill_(reg_bias)
         if isinstance(final_cls, nn.Conv2d) and final_cls.bias is not None:
             prior = min(max(float(objectness_prior), 1e-4), 1.0 - 1e-4)
             with torch.no_grad():
@@ -1153,6 +1160,7 @@ class TinyDetector(nn.Module):
         pretrained: bool = True,
         quality_head: bool = False,
         architecture: str = "yolo",
+        reg_initial_distance: float = 4.0,
         **_: object,
     ) -> None:
         super().__init__()
@@ -1210,9 +1218,9 @@ class TinyDetector(nn.Module):
         if self.anchor_free:
             self.main_heads = nn.ModuleList(
                 [
-                    AnchorFreeHead(feature_channels[0], head_channels, cls_channels, num_classes, dropout, attention=str(head_attention)),
-                    AnchorFreeHead(feature_channels[1], head_channels, cls_channels, num_classes, dropout, attention=str(head_attention)),
-                    AnchorFreeHead(feature_channels[2], head_channels, cls_channels, num_classes, dropout, attention=str(head_attention)),
+                    AnchorFreeHead(feature_channels[0], head_channels, cls_channels, num_classes, dropout, attention=str(head_attention), initial_distance=reg_initial_distance),
+                    AnchorFreeHead(feature_channels[1], head_channels, cls_channels, num_classes, dropout, attention=str(head_attention), initial_distance=reg_initial_distance),
+                    AnchorFreeHead(feature_channels[2], head_channels, cls_channels, num_classes, dropout, attention=str(head_attention), initial_distance=reg_initial_distance),
                 ]
             )
             self.aux_head_enabled = False

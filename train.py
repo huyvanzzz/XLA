@@ -460,6 +460,8 @@ def run_epoch(
     channels_last: bool = False,
 ) -> dict[str, float]:
     training = optimizer is not None
+    if hasattr(criterion, "current_epoch"):
+        criterion.current_epoch = int(epoch)
     model.train(training)
     if training and freeze_backbone:
         set_frozen_feature_extractor_eval(model)
@@ -503,13 +505,16 @@ def run_epoch(
         for key, value in logs.items():
             totals[key] = totals.get(key, 0.0) + float(value)
         steps += 1
-        progress.set_postfix(
+        postfix = dict(
             loss=f"{logs['loss']:.3f}",
             box=f"{logs['box_loss']:.3f}",
             iou=f"{logs['iou_loss']:.3f}",
             obj=f"{logs['obj_loss']:.3f}",
             cls=f"{logs['cls_loss']:.3f}",
         )
+        if "num_pos" in logs:
+            postfix["pos"] = f"{logs['num_pos']:.0f}"
+        progress.set_postfix(**postfix)
 
     return {key: value / max(steps, 1) for key, value in totals.items()}
 
@@ -720,6 +725,7 @@ def main() -> None:
             class_weights=class_weights,
             varifocal_alpha=float(loss_weights.get("varifocal_alpha", 0.75)),
             varifocal_gamma=float(loss_weights.get("varifocal_gamma", 2.0)),
+            assignment_warmup_epochs=int(loss_weights.get("assignment_warmup_epochs", 5)),
         ).to(device)
     else:
         criterion = YoloLoss(

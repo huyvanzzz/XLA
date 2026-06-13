@@ -23,6 +23,7 @@ class AnchorFreeLoss(nn.Module):
         class_weights: list[float] | None = None,
         varifocal_alpha: float = 0.75,
         varifocal_gamma: float = 2.0,
+        assignment_warmup_epochs: int = 5,
     ) -> None:
         super().__init__()
         self.image_size = int(image_size)
@@ -35,6 +36,8 @@ class AnchorFreeLoss(nn.Module):
         self.positive_anchor_topk = max(1, int(positive_anchor_topk))
         self.varifocal_alpha = float(varifocal_alpha)
         self.varifocal_gamma = float(varifocal_gamma)
+        self.assignment_warmup_epochs = max(0, int(assignment_warmup_epochs))
+        self.current_epoch = 0
         if class_weights is not None:
             self.register_buffer("class_weights", torch.tensor(class_weights, dtype=torch.float32))
         else:
@@ -56,24 +59,36 @@ class AnchorFreeLoss(nn.Module):
         assigned_quality = boxes.new_zeros((batch_size, num_candidates))
 
         for batch_idx, target in enumerate(targets):
-            gt_boxes = target["boxes"].to(device)
+            gt_boxes = target["boxes"].to(device=device, dtype=torch.float32)
             gt_labels = target["labels"].to(device)
             if gt_boxes.numel() == 0:
                 continue
-            ious = box_iou(boxes[batch_idx], gt_boxes).clamp(min=0.0)
+            pred_boxes = boxes[batch_idx].float()
+            pred_scores = cls_logits[batch_idx].float().sigmoid()
+            centers_f = centers.float()
+            strides_f = strides.float()
+            ious = box_iou(pred_boxes, gt_boxes).clamp(min=0.0)
             gt_centers = (gt_boxes[:, :2] + gt_boxes[:, 2:]) * 0.5
             in_box = (
-                (centers[:, None, 0] >= gt_boxes[None, :, 0])
-                & (centers[:, None, 0] <= gt_boxes[None, :, 2])
-                & (centers[:, None, 1] >= gt_boxes[None, :, 1])
-                & (centers[:, None, 1] <= gt_boxes[None, :, 3])
+                (centers_f[:, None, 0] >= gt_boxes[None, :, 0])
+                & (centers_f[:, None, 0] <= gt_boxes[None, :, 2])
+                & (centers_f[:, None, 1] >= gt_boxes[None, :, 1])
+                & (centers_f[:, None, 1] <= gt_boxes[None, :, 3])
             )
-            center_delta = (centers[:, None, :] - gt_centers[None, :, :]).abs()
-            center_limit = strides[:, None, :] * self.task_aligned_center_radius
+            center_delta = (centers_f[:, None, :] - gt_centers[None, :, :]).abs()
+            center_limit = strides_f[:, None, :] * self.task_aligned_center_radius
             in_center = (center_delta[..., 0] <= center_limit[..., 0]) & (center_delta[..., 1] <= center_limit[..., 1])
             candidate_mask = in_box | in_center
-            matched_scores = cls_logits[batch_idx].sigmoid()[:, gt_labels]
-            metric = matched_scores.clamp(min=1e-9).pow(self.task_aligned_alpha) * ious.pow(self.task_aligned_beta)
+            matched_scores = pred_scores[:, gt_labels]
+            if self.current_epoch <= self.assignment_warmup_epochs:
+                gt_wh = (gt_boxes[:, 2:] - gt_boxes[:, :2]).clamp(min=1.0)
+                normalized_delta = center_delta / (gt_wh[None, :, :] * 0.5).clamp(min=1.0)
+                center_metric = torch.exp(-2.0 * normalized_delta.square().sum(dim=-1))
+                metric = center_metric + 0.01 * ious
+            else:
+                metric = matched_scores.clamp(min=1e-6).pow(self.task_aligned_alpha) * ious.clamp(min=1e-4).pow(
+                    self.task_aligned_beta
+                )
             metric = torch.where(candidate_mask, metric, metric.new_full(metric.shape, -1.0))
 
             assigned_gt = torch.full((num_candidates,), -1, dtype=torch.long, device=device)
@@ -99,7 +114,10 @@ class AnchorFreeLoss(nn.Module):
                 continue
             positive[batch_idx, pos_idx] = True
             gt_idx = assigned_gt[pos_idx]
-            quality = assigned_iou[pos_idx].detach().clamp(0.05, 1.0)
+            if self.current_epoch <= self.assignment_warmup_epochs:
+                quality = assigned_metric[pos_idx].detach().clamp(0.25, 1.0)
+            else:
+                quality = assigned_iou[pos_idx].detach().clamp(0.05, 1.0)
             labels = gt_labels[gt_idx]
             cls_targets[batch_idx, pos_idx, labels] = quality.to(cls_targets.dtype)
             box_targets[batch_idx, pos_idx] = gt_boxes[gt_idx].to(box_targets.dtype)
@@ -108,8 +126,8 @@ class AnchorFreeLoss(nn.Module):
         normalizer = positive.sum().clamp(min=1).to(cls_logits.dtype)
         cls_loss = self._varifocal_loss(cls_logits, cls_targets).sum() / normalizer
         if positive.any():
-            pred_pos = boxes[positive]
-            target_pos = box_targets[positive]
+            pred_pos = boxes[positive].float()
+            target_pos = box_targets[positive].float()
             ciou = bbox_ciou(pred_pos, target_pos).clamp(min=-1.0, max=1.0)
             weight = assigned_quality[positive].clamp(min=0.05)
             iou_loss = ((1.0 - ciou) * weight).sum() / weight.sum().clamp(min=1e-6)
@@ -126,6 +144,7 @@ class AnchorFreeLoss(nn.Module):
             "noobj_loss": 0.0,
             "cls_loss": float(cls_loss.detach().cpu()),
             "quality_loss": 0.0,
+            "num_pos": float(positive.sum().detach().cpu()),
         }
 
     def _flatten_predictions(self, preds: list[torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
