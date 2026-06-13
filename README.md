@@ -26,7 +26,7 @@ The default design follows the research plan:
 - Decoupled anchor-free head. Each location predicts `l,t,r,b` distances plus five class-quality logits.
 - No separate objectness branch in the default anchor-free path.
 - Center-prior plus task-aligned top-k assignment.
-- Varifocal/quality-aware classification loss and CIoU box loss.
+- Quality Focal Loss with IoU-quality targets and CIoU box loss.
 - AMP, `cudnn.benchmark`, pinned memory, persistent workers, EMA, and train-time logging.
 - Validation after each epoch prints overall `mAP@0.5`, per-class `AP@0.5`, precision, recall, prediction count, and GT count.
 
@@ -90,7 +90,7 @@ python public/tools/evaluate_predictions.py \
 ## Implementation Notes
 
 - `models/tiny_detector.py` contains the ConvNeXtV2 backbone, necks, and anchor-free head.
-- `utils/loss.py` contains `AnchorFreeLoss`, including task-aligned assignment and Varifocal loss.
+- `utils/loss.py` contains `AnchorFreeLoss`, including task-aligned assignment and Quality Focal Loss.
 - `utils/inference.py` decodes anchor-free boxes and runs per-class NMS without `torchvision.ops.nms`.
 - `train.py` logs train epoch time separately from validation time, so the 3 minute budget can be checked on Kaggle P100.
 - Validation mAP is computed in-process and the best checkpoint stores the chosen metric/decode settings.

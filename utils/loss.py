@@ -21,6 +21,8 @@ class AnchorFreeLoss(nn.Module):
         task_aligned_center_radius: float = 2.5,
         positive_anchor_topk: int = 10,
         class_weights: list[float] | None = None,
+        quality_focal_loss: str = "qfl",
+        quality_focal_beta: float = 2.0,
         varifocal_alpha: float = 0.75,
         varifocal_gamma: float = 2.0,
         assignment_warmup_epochs: int = 5,
@@ -34,6 +36,8 @@ class AnchorFreeLoss(nn.Module):
         self.task_aligned_beta = float(task_aligned_beta)
         self.task_aligned_center_radius = float(task_aligned_center_radius)
         self.positive_anchor_topk = max(1, int(positive_anchor_topk))
+        self.quality_focal_loss = str(quality_focal_loss).lower()
+        self.quality_focal_beta = float(quality_focal_beta)
         self.varifocal_alpha = float(varifocal_alpha)
         self.varifocal_gamma = float(varifocal_gamma)
         self.assignment_warmup_epochs = max(0, int(assignment_warmup_epochs))
@@ -130,7 +134,7 @@ class AnchorFreeLoss(nn.Module):
             assigned_quality[batch_idx, pos_idx] = quality.to(assigned_quality.dtype)
 
         normalizer = assigned_quality.sum().clamp(min=1.0).to(cls_logits.dtype)
-        cls_loss = self._varifocal_loss(cls_logits, cls_targets).sum() / normalizer
+        cls_loss = self._quality_classification_loss(cls_logits, cls_targets).sum() / normalizer
         if positive.any():
             pred_pos = boxes[positive].float()
             target_pos = box_targets[positive].float()
@@ -200,6 +204,21 @@ class AnchorFreeLoss(nn.Module):
         if self.class_weights is not None:
             loss = loss * self.class_weights.to(logits.device, logits.dtype).view(1, 1, -1)
         return loss
+
+    def _quality_focal_loss(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        pred_score = logits.sigmoid()
+        scale_factor = (targets - pred_score).abs().pow(self.quality_focal_beta)
+        loss = F.binary_cross_entropy_with_logits(logits, targets, reduction="none") * scale_factor
+        if self.class_weights is not None:
+            loss = loss * self.class_weights.to(logits.device, logits.dtype).view(1, 1, -1)
+        return loss
+
+    def _quality_classification_loss(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        if self.quality_focal_loss == "varifocal":
+            return self._varifocal_loss(logits, targets)
+        if self.quality_focal_loss != "qfl":
+            raise ValueError(f"Unsupported anchor-free classification loss: {self.quality_focal_loss}")
+        return self._quality_focal_loss(logits, targets)
 
 
 class YoloLoss(nn.Module):

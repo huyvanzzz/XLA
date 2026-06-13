@@ -124,6 +124,8 @@ loss_weights:
   classification_quality_mix: 0.15
   classification_focal_gamma: 0.3
   quality_weight: 0.0
+  quality_focal_loss: qfl
+  quality_focal_beta: 2.0
   varifocal_alpha: 0.75
   varifocal_gamma: 2.0
   assignment_warmup_epochs: 5
@@ -133,7 +135,7 @@ inference:
   class_conf_thresholds: {}
   tta_hflip: false
   nms_threshold: 0.5
-  nms_type: diou
+  nms_type: hard
   merge_nms: false
   max_detections: 100
   pre_nms_topk: 500
@@ -150,7 +152,7 @@ validation_metric:
   class_conf_thresholds: {}
   tta_hflip: false
   nms_threshold: 0.5
-  nms_type: diou
+  nms_type: hard
   merge_nms: false
   pre_nms_topk: 500
   class_pre_nms_topk: 120
