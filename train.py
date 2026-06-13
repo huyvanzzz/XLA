@@ -514,6 +514,8 @@ def run_epoch(
         )
         if "num_pos" in logs:
             postfix["pos"] = f"{logs['num_pos']:.0f}"
+        if "mean_quality" in logs:
+            postfix["quality"] = f"{logs['mean_quality']:.3f}"
         progress.set_postfix(**postfix)
 
     return {key: value / max(steps, 1) for key, value in totals.items()}

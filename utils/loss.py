@@ -63,8 +63,8 @@ class AnchorFreeLoss(nn.Module):
             gt_labels = target["labels"].to(device)
             if gt_boxes.numel() == 0:
                 continue
-            pred_boxes = boxes[batch_idx].float()
-            pred_scores = cls_logits[batch_idx].float().sigmoid()
+            pred_boxes = boxes[batch_idx].detach().float()
+            pred_scores = cls_logits[batch_idx].detach().float().sigmoid()
             centers_f = centers.float()
             strides_f = strides.float()
             ious = box_iou(pred_boxes, gt_boxes).clamp(min=0.0)
@@ -78,59 +78,65 @@ class AnchorFreeLoss(nn.Module):
             center_delta = (centers_f[:, None, :] - gt_centers[None, :, :]).abs()
             center_limit = strides_f[:, None, :] * self.task_aligned_center_radius
             in_center = (center_delta[..., 0] <= center_limit[..., 0]) & (center_delta[..., 1] <= center_limit[..., 1])
-            candidate_mask = in_box | in_center
+            # TAL requires positive points to lie inside the GT. Very small
+            # boxes may contain no feature point, so only those GTs fall back
+            # to the center prior.
+            candidate_mask = in_box.clone()
+            no_inside_point = ~candidate_mask.any(dim=0)
+            if no_inside_point.any():
+                candidate_mask[:, no_inside_point] = in_center[:, no_inside_point]
             matched_scores = pred_scores[:, gt_labels]
             if self.current_epoch <= self.assignment_warmup_epochs:
                 gt_wh = (gt_boxes[:, 2:] - gt_boxes[:, :2]).clamp(min=1.0)
                 normalized_delta = center_delta / (gt_wh[None, :, :] * 0.5).clamp(min=1.0)
                 center_metric = torch.exp(-2.0 * normalized_delta.square().sum(dim=-1))
-                metric = center_metric + 0.01 * ious
+                metric = center_metric * ious.clamp(min=1e-3).sqrt()
             else:
                 metric = matched_scores.clamp(min=1e-6).pow(self.task_aligned_alpha) * ious.clamp(min=1e-4).pow(
                     self.task_aligned_beta
                 )
             metric = torch.where(candidate_mask, metric, metric.new_full(metric.shape, -1.0))
 
-            assigned_gt = torch.full((num_candidates,), -1, dtype=torch.long, device=device)
-            assigned_metric = torch.full((num_candidates,), -1.0, device=device)
-            assigned_iou = torch.zeros((num_candidates,), device=device)
+            positive_by_gt = torch.zeros_like(metric, dtype=torch.bool)
             topk = min(self.positive_anchor_topk, num_candidates)
             for obj_idx in range(gt_boxes.shape[0]):
                 values, indices = metric[:, obj_idx].topk(topk)
                 keep = values > 0
-                if not keep.any():
-                    continue
-                indices = indices[keep]
-                values = values[keep]
-                replace = values > assigned_metric[indices]
-                if replace.any():
-                    chosen = indices[replace]
-                    assigned_gt[chosen] = obj_idx
-                    assigned_metric[chosen] = values[replace]
-                    assigned_iou[chosen] = ious[chosen, obj_idx]
+                if keep.any():
+                    positive_by_gt[indices[keep], obj_idx] = True
 
-            pos_idx = (assigned_gt >= 0).nonzero(as_tuple=False).flatten()
+            # A point selected by multiple GTs belongs to the GT with the
+            # highest IoU, matching the official TAL conflict rule.
+            positive_any = positive_by_gt.any(dim=1)
+            candidate_ious = torch.where(positive_by_gt, ious, ious.new_full(ious.shape, -1.0))
+            assigned_gt = candidate_ious.argmax(dim=1)
+            pos_idx = positive_any.nonzero(as_tuple=False).flatten()
             if pos_idx.numel() == 0:
                 continue
             positive[batch_idx, pos_idx] = True
             gt_idx = assigned_gt[pos_idx]
-            if self.current_epoch <= self.assignment_warmup_epochs:
-                quality = assigned_metric[pos_idx].detach().clamp(0.25, 1.0)
-            else:
-                quality = assigned_iou[pos_idx].detach().clamp(0.05, 1.0)
+
+            # Normalize the alignment metric per GT and scale it by that GT's
+            # best selected IoU. This is the soft target used by TAL/PP-YOLOE.
+            selected_metric = torch.where(positive_by_gt, metric.clamp(min=0.0), torch.zeros_like(metric))
+            selected_iou = torch.where(positive_by_gt, ious, torch.zeros_like(ious))
+            max_metric = selected_metric.max(dim=0).values.clamp(min=1e-9)
+            max_iou = selected_iou.max(dim=0).values
+            normalized_alignment = selected_metric / max_metric.unsqueeze(0) * max_iou.unsqueeze(0)
+            quality = normalized_alignment[pos_idx, gt_idx].detach().clamp(0.0, 1.0)
             labels = gt_labels[gt_idx]
             cls_targets[batch_idx, pos_idx, labels] = quality.to(cls_targets.dtype)
             box_targets[batch_idx, pos_idx] = gt_boxes[gt_idx].to(box_targets.dtype)
             assigned_quality[batch_idx, pos_idx] = quality.to(assigned_quality.dtype)
 
-        normalizer = positive.sum().clamp(min=1).to(cls_logits.dtype)
+        normalizer = assigned_quality.sum().clamp(min=1.0).to(cls_logits.dtype)
         cls_loss = self._varifocal_loss(cls_logits, cls_targets).sum() / normalizer
         if positive.any():
             pred_pos = boxes[positive].float()
             target_pos = box_targets[positive].float()
             ciou = bbox_ciou(pred_pos, target_pos).clamp(min=-1.0, max=1.0)
-            weight = assigned_quality[positive].clamp(min=0.05)
-            iou_loss = ((1.0 - ciou) * weight).sum() / weight.sum().clamp(min=1e-6)
+            weight = assigned_quality[positive]
+            iou_loss = ((1.0 - ciou) * weight).sum() / normalizer
             box_loss = iou_loss
         else:
             iou_loss = boxes.sum() * 0.0
@@ -145,6 +151,9 @@ class AnchorFreeLoss(nn.Module):
             "cls_loss": float(cls_loss.detach().cpu()),
             "quality_loss": 0.0,
             "num_pos": float(positive.sum().detach().cpu()),
+            "mean_quality": float(
+                assigned_quality[positive].mean().detach().cpu() if positive.any() else assigned_quality.sum().detach().cpu()
+            ),
         }
 
     def _flatten_predictions(self, preds: list[torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
