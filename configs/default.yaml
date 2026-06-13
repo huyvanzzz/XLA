@@ -45,12 +45,12 @@ augmentation:
   close_strong_aug_epoch: 55
 
 model:
-  architecture: yolo
+  architecture: anchor_free
   backbone: convnextv2_nano
   pretrained: true
   base_channels: 40
   head_channels: 160
-  neck_channels: 160
+  neck_channels: 128
   attention_heads: 0
   objectness_prior: 0.01
   dropout: 0.08
@@ -61,7 +61,7 @@ model:
   head_coordconv: false
   head_refine: true
   head_type: efficient_decoupled
-  aux_head: true
+  aux_head: false
   aux_head_close_epoch: 30
   decoupled_head: false
   cls_head_channels: 96
@@ -69,7 +69,7 @@ model:
   reg_initial_distance: 4.0
 
 anchors:
-  auto: true
+  auto: false
   kmeans_iters: 40
   evolve_generations: 0
   anchor_threshold: 4.0
@@ -99,18 +99,18 @@ balanced_sampling:
 
 loss_weights:
   box_weight: 0.0
-  obj_weight: 1.0
-  noobj_weight: 0.25
+  obj_weight: 0.0
+  noobj_weight: 0.0
   cls_weight: 1.0
-  iou_weight: 5.5
-  aux_weight: 0.4
+  iou_weight: 5.0
+  aux_weight: 0.0
   objectness_focal_gamma: 1.5
   iou_aware_objectness: true
   assignment_strategy: task_aligned
-  positive_anchor_topk: 6
+  positive_anchor_topk: 10
   ignore_anchor_iou: 0.5
   objectness_iou_mix: 0.7
-  decode_style: yolov7
+  decode_style: anchor_free
   target_offsets: true
   target_offset_bias: 0.5
   scale_obj_balance: [4.0, 1.0, 0.4]
@@ -138,7 +138,7 @@ inference:
   max_detections: 100
   pre_nms_topk: 500
   class_pre_nms_topk: 120
-  decode_style: yolov7
+  decode_style: anchor_free
   class_activation: sigmoid
   quality_score_power: 0.0
 
@@ -154,7 +154,7 @@ validation_metric:
   merge_nms: false
   pre_nms_topk: 500
   class_pre_nms_topk: 120
-  decode_style: yolov7
+  decode_style: anchor_free
   class_activation: sigmoid
   quality_score_power: 0.0
   tune: false

@@ -625,6 +625,11 @@ def main() -> None:
     seed_everything(args.seed)
     preserve_aspect = bool(config.get("preserve_aspect", True))
     config["validation_metric"]["preserve_aspect"] = preserve_aspect
+    if str(model_config.get("architecture", "yolo")) == "anchor_free":
+        config["inference"]["decode_style"] = "anchor_free"
+        config["validation_metric"]["decode_style"] = "anchor_free"
+        loss_weights = config["loss_weights"]
+        loss_weights["decode_style"] = "anchor_free"
     channels_last = bool(config.get("channels_last", True)) and torch.cuda.is_available()
     config["validation_metric"]["channels_last"] = channels_last
     if bool(config.get("cudnn_benchmark", True)) and torch.cuda.is_available():

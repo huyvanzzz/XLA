@@ -58,6 +58,8 @@ def decode_predictions(
 ) -> list[dict[str, object]]:
     if isinstance(pred, dict):
         preds = pred["main"]
+        if pred.get("format") == "anchor_free":
+            decode_style = "anchor_free"
     elif isinstance(pred, list):
         preds = pred
     else:

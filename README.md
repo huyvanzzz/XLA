@@ -1,29 +1,36 @@
-# From-Scratch Tiny YOLO Object Detector
+# From-Scratch Anchor-Free Object Detector
 
-Mô hình này là detector kiểu YOLO nhỏ tự cài bằng PyTorch. Code không dùng YOLOv5/v8, Detectron2, MMDetection hay Faster R-CNN/SSD có sẵn.
+This project implements a small from-scratch object detector for the five required classes: `person`, `car`, `dog`, `cat`, and `chair`. It does not use YOLOv5/v8, Detectron2, MMDetection, torchvision Faster R-CNN/SSD, or a complete detector framework. The pretrained ConvNeXtV2 backbone is used only as a feature extractor; the detector neck, head, assignment, loss, decode, NMS, training loop, and prediction JSON export are implemented in this repo.
 
-## Cài đặt
+## Install
 
 ```bash
 pip install -r requirements.txt
 ```
 
-Nếu máy có GPU, cài bản PyTorch phù hợp CUDA theo hướng dẫn chính thức của PyTorch.
+Install the CUDA build of PyTorch that matches the machine if training on GPU.
 
-## Huấn luyện
+## Train
 
-Tham số chính nằm trong:
+Main hyperparameters are in:
 
 ```text
 configs/default.yaml
 ```
 
-Bạn có thể sửa trực tiếp file YAML này để đổi `image_size`, `epochs`, `batch_size`, `lr`, `anchors`, `loss_weights`, `conf_threshold`, `nms_threshold`.
-Mục `model` điều chỉnh backbone/neck/head. Mặc định dùng ResNet50 pretrained ImageNet làm backbone, còn FPN/PAN neck, context blocks, YOLO heads, auxiliary heads, loss, decode và NMS vẫn tự triển khai.
-Config cũng có các cơ chế chống overfit: random crop/scale augmentation, dropout trong neck/head, freeze backbone vài epoch đầu, early stopping theo mAP và EMA weights.
-Các cơ chế tối ưu mAP gồm auto anchors từ train annotations, one-to-many top-k anchor assignment, focal objectness, IoU-aware objectness, class weights cho dữ liệu lệch lớp, multi-scale training, hard NMS tự cài theo lớp với pre-NMS top-k và chọn `best.pth` theo `mAP@0.5`.
+The default design follows the research plan:
 
-Lệnh bắt buộc của đề:
+- `ConvNeXtV2-Nano` pretrained backbone, with stride 8/16/32 feature maps.
+- Fixed `448x448` input for stable P100 throughput.
+- Lightweight PAN neck with depthwise convolution and ECA attention.
+- Decoupled anchor-free head. Each location predicts `l,t,r,b` distances plus five class-quality logits.
+- No separate objectness branch in the default anchor-free path.
+- Center-prior plus task-aligned top-k assignment.
+- Varifocal/quality-aware classification loss and CIoU box loss.
+- AMP, `cudnn.benchmark`, pinned memory, persistent workers, EMA, and train-time logging.
+- Validation after each epoch prints overall `mAP@0.5`, per-class `AP@0.5`, precision, recall, prediction count, and GT count.
+
+Required training command:
 
 ```bash
 python train.py \
@@ -34,33 +41,28 @@ python train.py \
   --checkpoint_dir ./models/
 ```
 
-Checkpoint tốt nhất được lưu tại:
+The best checkpoint is selected by validation `mAP@0.5` and saved to:
 
 ```text
 models/best.pth
 ```
 
-Có thể override tạm thời bằng command line:
+Useful overrides:
 
 ```bash
-python train.py ... --epochs 80 --batch_size 16 --image_size 416 --lr 0.0002
+python train.py ... --epochs 80 --batch_size 24 --image_size 448 --lr 0.00014
 ```
 
-Các trọng số loss cũng chỉnh trực tiếp được:
+If P100 train time is above the 3 minute per-epoch target, switch only the backbone to Pico first:
 
-```bash
-python train.py ... --box_weight 5.0 --obj_weight 1.0 --noobj_weight 0.5 --cls_weight 1.0
+```yaml
+model:
+  backbone: convnextv2_pico
 ```
 
-Nếu muốn dùng file config khác:
+## Predict
 
-```bash
-python train.py ... --config configs/experiment_01.yaml
-```
-
-## Suy luận
-
-Lệnh bắt buộc của đề:
+Required inference command:
 
 ```bash
 python predict.py \
@@ -68,13 +70,15 @@ python predict.py \
   --output predictions.json
 ```
 
-Mặc định `predict.py` đọc trọng số từ `models/best.pth`. Nếu muốn dùng checkpoint khác:
+By default, `predict.py` reads `models/best.pth`. To use another checkpoint:
 
 ```bash
 python predict.py --image_dir ./public/val/images --output val_predictions.json --checkpoint ./models/best.pth
 ```
 
-## Kiểm tra trên validation
+The output is a JSON array in the required format. Images with no detections are still emitted with `"boxes": []`.
+
+## Validate Predictions
 
 ```bash
 python public/tools/evaluate_predictions.py \
@@ -83,51 +87,14 @@ python public/tools/evaluate_predictions.py \
   --output val_score.json
 ```
 
-## Kiến trúc
+## Implementation Notes
 
-- Backbone mặc định là ResNet50 pretrained ImageNet. Kiến trúc ResNet50 được cài trong repo và tải weight bằng `torch.hub`, không phụ thuộc `torchvision`.
-- Có thể đổi `model.backbone: eelan` và `pretrained: false` để dùng E-ELAN-like CNN tự viết.
-- Ảnh được letterbox về `512x512` để giữ tỉ lệ gốc, tránh làm méo object; bbox được scale/pad tương ứng.
-- Neck FPN/PAN fuse 3 scale stride 8/16/32 từ backbone, có SPP và large-kernel depthwise context ở tầng sâu.
-- Detection head dự đoán trên 3 scale stride 8/16/32, tức ảnh `512x512` cho feature maps `64x64`, `32x32`, `16x16`.
-- Có auxiliary heads dùng khi train theo tinh thần trainable bag-of-freebies; inference chỉ dùng main heads.
-- Mỗi scale có 3 anchors, cấu hình trong `configs/default.yaml`.
-- Mỗi anchor dự đoán:
-  - `tx, ty`: offset tâm box trong ô lưới.
-  - `tw, th`: log-scale chiều rộng/cao so với anchor.
-  - `object_logit`: điểm có object.
-  - `class_logits`: logits cho 5 lớp.
+- `models/tiny_detector.py` contains the ConvNeXtV2 backbone, necks, and anchor-free head.
+- `utils/loss.py` contains `AnchorFreeLoss`, including task-aligned assignment and Varifocal loss.
+- `utils/inference.py` decodes anchor-free boxes and runs per-class NMS without `torchvision.ops.nms`.
+- `train.py` logs train epoch time separately from validation time, so the 3 minute budget can be checked on Kaggle P100.
+- Validation mAP is computed in-process and the best checkpoint stores the chosen metric/decode settings.
 
-## Loss
+## Research Basis
 
-Loss nằm trong `utils/loss.py`, được tách rõ thành các phần:
-
-- `box_loss`: Smooth L1 cho bbox của positive anchors.
-- `iou_loss`: CIoU loss trên bbox đã decode của positive anchors.
-- `obj_loss`: BCEWithLogits cho anchor được gán object.
-- `noobj_loss`: BCEWithLogits cho background anchors.
-- `cls_loss`: Cross Entropy cho class của positive anchors.
-
-Công thức tổng:
-
-```text
-total_loss =
-  7.5 * box_loss
-  + 1.5 * iou_loss
-  + 1.0 * obj_loss
-  + 0.35 * noobj_loss
-  + 1.0 * cls_loss
-  + 0.4 * aux_loss
-```
-
-Ground-truth box được gán vào ô lưới chứa tâm box. Trong ô đó, top-k anchors có IoU theo width/height cao nhất sẽ là positive anchors để tăng tín hiệu học và recall.
-
-## Inference
-
-`predict.py` thực hiện:
-
-- Decode output YOLO về bbox trên ảnh resize.
-- Scale bbox về kích thước ảnh gốc.
-- Lọc theo confidence threshold.
-- NMS riêng từng lớp.
-- Xuất JSON đúng format của đề, kể cả ảnh không có object vẫn có `"boxes": []`.
+The default choices are based on ConvNeXtV2 for small pretrained ConvNet features, RTMDet/PP-YOLOE-style efficient neck and task-aligned assignment, and VarifocalNet/GFL-style quality-aware class scores for AP ranking.
