@@ -415,9 +415,11 @@ def _is_trainable_backbone_parameter(name: str, mode: str) -> bool:
         return False
     if name.startswith("convnext."):
         if mode == "layer4":
-            return name.startswith("convnext.stage4")
+            return name.startswith(("convnext.down3", "convnext.stage4"))
+        if mode in {"stage3_tail_layer4", "stage3_tail"}:
+            return name.startswith(("convnext.down3", "convnext.stage4"))
         if mode in {"layer3_layer4", "layer34"}:
-            return name.startswith(("convnext.stage3", "convnext.stage4"))
+            return name.startswith(("convnext.down2", "convnext.stage3", "convnext.down3", "convnext.stage4"))
         if mode in {"layer2_layer3_layer4", "layer234"}:
             return name.startswith(("convnext.stage2", "convnext.stage3", "convnext.stage4"))
         return False
@@ -425,9 +427,26 @@ def _is_trainable_backbone_parameter(name: str, mode: str) -> bool:
 
 
 def set_backbone_trainable(model: TinyDetector, warmup_frozen: bool, trainable_mode: str) -> None:
+    stage3_indices = {
+        int(parts[2])
+        for name, _ in model.named_parameters()
+        if name.startswith("convnext.stage3.")
+        for parts in [name.split(".")]
+        if len(parts) > 2 and parts[2].isdigit()
+    }
+    stage3_tail_start = max(stage3_indices) - 1 if stage3_indices else None
     for name, parameter in model.named_parameters():
         if _is_backbone_parameter(name):
-            parameter.requires_grad_(False if warmup_frozen else _is_trainable_backbone_parameter(name, trainable_mode))
+            trainable = _is_trainable_backbone_parameter(name, trainable_mode)
+            if (
+                not warmup_frozen
+                and trainable_mode in {"stage3_tail_layer4", "stage3_tail"}
+                and stage3_tail_start is not None
+                and name.startswith("convnext.stage3.")
+            ):
+                parts = name.split(".")
+                trainable = len(parts) > 2 and parts[2].isdigit() and int(parts[2]) >= stage3_tail_start
+            parameter.requires_grad_(False if warmup_frozen else trainable)
         else:
             parameter.requires_grad_(True)
 
@@ -661,6 +680,8 @@ def main() -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     checkpoint_dir = Path(args.checkpoint_dir)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    history_path = checkpoint_dir / "history.jsonl"
+    history_path.unlink(missing_ok=True)
 
     train_set = DetectionDataset(
         args.train_data,
@@ -905,9 +926,13 @@ def main() -> None:
                     total_epochs=args.epochs,
                     channels_last=channels_last,
                 )
+        epoch_lrs = [float(group["lr"]) for group in optimizer.param_groups]
         scheduler.step()
 
-        log_line = f"epoch {epoch:03d}/{args.epochs} train_loss={train_logs['loss']:.4f} train_time={train_time:.1f}s"
+        log_line = (
+            f"epoch {epoch:03d}/{args.epochs} train_loss={train_logs['loss']:.4f} "
+            f"train_time={train_time:.1f}s lr={max(epoch_lrs):.2e}"
+        )
         if val_logs is not None:
             log_line += (
                 f" val_loss={val_logs['loss']:.4f} "
@@ -948,6 +973,23 @@ def main() -> None:
                 f"nms={metric_logs['nms_threshold']:.2f}"
             )
             print_per_class_map("per-class AP@0.5:", metric_logs)
+
+        history_record = {
+            "epoch": epoch,
+            "train_time": train_time,
+            "learning_rates": epoch_lrs,
+            "backbone_trainable": active_backbone_trainable,
+            "augmentation": {
+                "mosaic_prob": float(train_set.augment_config.get("mosaic_prob", 0.0)),
+                "random_crop_prob": float(train_set.augment_config.get("random_crop_prob", 0.0)),
+                "random_scale_prob": float(train_set.augment_config.get("random_scale_prob", 0.0)),
+                "color_jitter_prob": float(train_set.augment_config.get("color_jitter_prob", 0.0)),
+            },
+            "train": train_logs,
+            "validation": metric_logs,
+        }
+        with history_path.open("a", encoding="utf-8") as history_file:
+            history_file.write(json.dumps(history_record, ensure_ascii=False) + "\n")
 
         state = {
             "model": model.state_dict(),

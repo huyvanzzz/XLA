@@ -27,7 +27,7 @@ The default design follows the research plan:
 - No separate objectness branch in the default anchor-free path.
 - Center-prior plus task-aligned top-k assignment.
 - Quality Focal Loss with IoU-quality targets and CIoU box loss.
-- AMP, `cudnn.benchmark`, pinned memory, persistent workers, EMA, and train-time logging.
+- AMP, `cudnn.benchmark`, pinned memory, persistent workers, EMA, gradual backbone unfreezing, and train-time logging.
 - Validation after each epoch prints overall `mAP@0.5`, per-class `AP@0.5`, precision, recall, prediction count, and GT count.
 
 Required training command:

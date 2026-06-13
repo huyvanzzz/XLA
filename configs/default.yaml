@@ -19,9 +19,9 @@ label_smoothing: 0.02
 freeze_backbone_epochs: 2
 backbone_trainable: layer4
 late_backbone:
-  enabled: false
-  start_epoch: 55
-  trainable: layer3_layer4
+  enabled: true
+  start_epoch: 12
+  trainable: stage3_tail_layer4
 backbone_freeze_bn: true
 early_stopping_patience: 15
 
@@ -30,7 +30,7 @@ validation_loss:
 
 augmentation:
   mosaic_prob: 0.08
-  close_mosaic_epoch: 8
+  close_mosaic_epoch: 60
   random_crop_prob: 0.12
   min_crop_scale: 0.85
   random_scale_prob: 0.3
@@ -93,7 +93,7 @@ objectness_bias:
   nominal_objects: 8.0
 
 balanced_sampling:
-  enabled: true
+  enabled: false
   power: 0.5
   empty_weight: 0.35
 
