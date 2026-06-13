@@ -217,6 +217,7 @@ class YoloLoss(nn.Module):
         noobj_hard_negative_ratio: float = 0.1,
         noobj_hard_negative_min: int = 256,
         assignment_strategy: str = "legacy",
+        assignment_warmup_epochs: int = 0,
         task_aligned_alpha: float = 0.5,
         task_aligned_beta: float = 6.0,
         task_aligned_center_radius: float = 2.5,
@@ -249,6 +250,8 @@ class YoloLoss(nn.Module):
         self.noobj_hard_negative_ratio = min(max(float(noobj_hard_negative_ratio), 0.0), 1.0)
         self.noobj_hard_negative_min = max(1, int(noobj_hard_negative_min))
         self.assignment_strategy = str(assignment_strategy)
+        self.assignment_warmup_epochs = max(0, int(assignment_warmup_epochs))
+        self.current_epoch = 0
         self.task_aligned_alpha = float(task_aligned_alpha)
         self.task_aligned_beta = float(task_aligned_beta)
         self.task_aligned_center_radius = float(task_aligned_center_radius)
@@ -318,7 +321,15 @@ class YoloLoss(nn.Module):
             scale_offsets.append(offset)
             offset += anchors.shape[0]
 
-        if self.assignment_strategy == "task_aligned":
+        effective_assignment_strategy = self.assignment_strategy
+        if (
+            self.assignment_strategy == "task_aligned"
+            and self.assignment_warmup_epochs > 0
+            and 0 < self.current_epoch <= self.assignment_warmup_epochs
+        ):
+            effective_assignment_strategy = "legacy"
+
+        if effective_assignment_strategy == "task_aligned":
             self._assign_task_aligned(
                 preds,
                 targets,
@@ -546,9 +557,13 @@ class YoloLoss(nn.Module):
             strides[:, 0] = stride_x
             strides[:, 1] = stride_y
 
-            decoded = self._decode_boxes(pred, anchors_by_scale[scale_idx]).reshape(batch_size, -1, 4)
-            object_scores = pred[..., 4].sigmoid()
-            class_scores = pred[..., 5 : 5 + self.num_classes].softmax(dim=-1)
+            decoded = self._decode_boxes(pred.float(), anchors_by_scale[scale_idx].float()).reshape(batch_size, -1, 4)
+            object_scores = pred[..., 4].float().sigmoid()
+            class_logits = pred[..., 5 : 5 + self.num_classes].float()
+            if self.classification_loss == "bce":
+                class_scores = class_logits.sigmoid()
+            else:
+                class_scores = class_logits.softmax(dim=-1)
             scores = (object_scores[..., None] * class_scores).reshape(batch_size, -1, self.num_classes)
 
             flat_boxes.append(decoded)
@@ -571,7 +586,7 @@ class YoloLoss(nn.Module):
         num_candidates = all_centers.shape[0]
 
         for batch_idx, target in enumerate(targets):
-            boxes = target["boxes"].to(device)
+            boxes = target["boxes"].to(device=device, dtype=torch.float32)
             labels = target["labels"].to(device)
             if boxes.numel() == 0:
                 continue
