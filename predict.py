@@ -11,7 +11,13 @@ from tqdm import tqdm
 from models.tiny_detector import TinyDetector
 from utils.config import get_anchors, load_config
 from utils.dataset import load_classes
-from utils.inference import decode_predictions, flip_detections_horizontally, load_image_for_inference, merge_detections
+from utils.inference import (
+    decode_predictions,
+    flip_detections_horizontally,
+    load_image_for_inference,
+    merge_detections,
+    weighted_box_fusion,
+)
 
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
@@ -90,6 +96,8 @@ def main() -> None:
         args.decode_style = "anchor_free"
         args.class_activation = "sigmoid"
     tta_hflip = bool(config["inference"].get("tta_hflip", False))
+    tta_fusion = str(config["inference"].get("tta_fusion", "wbf")).lower()
+    tta_iou_threshold = float(config["inference"].get("tta_iou_threshold", 0.55))
 
     model = TinyDetector(num_classes=len(classes), num_anchors=[len(scale) for scale in anchors], **model_config).to(device)
     if channels_last:
@@ -161,14 +169,23 @@ def main() -> None:
                         class_activation=args.class_activation,
                         quality_score_power=float(args.quality_score_power),
                     )
-                    boxes = merge_detections(
-                        boxes + flip_detections_horizontally(flip_boxes, orig_w),
-                        classes=classes,
-                        nms_threshold=args.nms_threshold,
-                        nms_type=args.nms_type,
-                        merge_nms=bool(args.merge_nms),
-                        max_detections=args.max_detections,
-                    )
+                    flip_boxes = flip_detections_horizontally(flip_boxes, orig_w)
+                    if tta_fusion == "wbf":
+                        boxes = weighted_box_fusion(
+                            [boxes, flip_boxes],
+                            classes=classes,
+                            iou_threshold=tta_iou_threshold,
+                            max_detections=args.max_detections,
+                        )
+                    else:
+                        boxes = merge_detections(
+                            boxes + flip_boxes,
+                            classes=classes,
+                            nms_threshold=args.nms_threshold,
+                            nms_type=args.nms_type,
+                            merge_nms=bool(args.merge_nms),
+                            max_detections=args.max_detections,
+                        )
                 predictions.append({"image_id": image_path.name, "boxes": boxes})
             progress.update(len(batch_paths))
 

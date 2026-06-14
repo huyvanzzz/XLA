@@ -17,7 +17,7 @@ from tqdm.auto import tqdm
 from models.tiny_detector import TinyDetector
 from utils.config import get_anchors, load_config
 from utils.dataset import DetectionDataset, collate_fn, load_classes
-from utils.inference import decode_predictions
+from utils.inference import decode_predictions, flip_detections_horizontally, merge_detections, weighted_box_fusion
 from utils.loss import AnchorFreeLoss, YoloLoss
 from utils.box_ops import wh_iou
 
@@ -567,6 +567,9 @@ def evaluate_map(
     decode_style: str,
     class_activation: str,
     quality_score_power: float,
+    tta_hflip: bool,
+    tta_fusion: str,
+    tta_iou_threshold: float,
 ) -> dict[str, object]:
     model.eval()
     predictions = []
@@ -574,6 +577,7 @@ def evaluate_map(
     for images, targets in progress:
         images = images.to(device, memory_format=torch.channels_last if channels_last else torch.contiguous_format)
         outputs = model(images)
+        outputs_flip = model(torch.flip(images, dims=[3])) if tta_hflip else None
         for idx, target in enumerate(targets):
             boxes = decode_predictions(
                 {"main": [scale[idx : idx + 1] for scale in outputs["main"]]},
@@ -594,6 +598,40 @@ def evaluate_map(
                 class_activation=class_activation,
                 quality_score_power=quality_score_power,
             )
+            if outputs_flip is not None:
+                width = int(target["orig_width"])
+                flip_boxes = decode_predictions(
+                    {"main": [scale[idx : idx + 1] for scale in outputs_flip["main"]]},
+                    classes=classes,
+                    anchors=anchors,
+                    image_size=image_size,
+                    orig_width=width,
+                    orig_height=int(target["orig_height"]),
+                    conf_threshold=conf_threshold,
+                    class_conf_thresholds=class_conf_thresholds,
+                    nms_threshold=nms_threshold,
+                    nms_type=nms_type,
+                    merge_nms=merge_nms,
+                    pre_nms_topk=pre_nms_topk,
+                    class_pre_nms_topk=class_pre_nms_topk,
+                    preserve_aspect=preserve_aspect,
+                    decode_style=decode_style,
+                    class_activation=class_activation,
+                    quality_score_power=quality_score_power,
+                )
+                flip_boxes = flip_detections_horizontally(flip_boxes, width)
+                if tta_fusion == "wbf":
+                    boxes = weighted_box_fusion(
+                        [boxes, flip_boxes], classes, iou_threshold=tta_iou_threshold
+                    )
+                else:
+                    boxes = merge_detections(
+                        boxes + flip_boxes,
+                        classes=classes,
+                        nms_threshold=nms_threshold,
+                        nms_type=nms_type,
+                        merge_nms=merge_nms,
+                    )
             predictions.append({"image_id": str(target["image_id"]), "boxes": boxes})
 
     result = evaluate_predictions_map(ground_truth_path, predictions, classes, iou_threshold=0.5)
@@ -639,6 +677,9 @@ def evaluate_map_with_optional_tuning(
                 decode_style=str(metric_config.get("decode_style", "standard")),
                 class_activation=str(metric_config.get("class_activation", "softmax")),
                 quality_score_power=float(metric_config.get("quality_score_power", 0.0)),
+                tta_hflip=bool(metric_config.get("tta_hflip", False)),
+                tta_fusion=str(metric_config.get("tta_fusion", "wbf")).lower(),
+                tta_iou_threshold=float(metric_config.get("tta_iou_threshold", 0.55)),
             )
             if best is None or result["map50"] > best["map50"]:
                 best = result
@@ -769,6 +810,7 @@ def main() -> None:
             varifocal_alpha=float(loss_weights.get("varifocal_alpha", 0.75)),
             varifocal_gamma=float(loss_weights.get("varifocal_gamma", 2.0)),
             assignment_warmup_epochs=int(loss_weights.get("assignment_warmup_epochs", 5)),
+            box_loss_type=str(loss_weights.get("box_loss_type", "ciou")),
         ).to(device)
     else:
         criterion = YoloLoss(
@@ -1057,6 +1099,7 @@ def main() -> None:
                 "quality_focal_beta": float(loss_weights.get("quality_focal_beta", 2.0)),
                 "dfl_weight": float(loss_weights.get("dfl_weight", 0.5)),
                 "localization_quality_weight": float(loss_weights.get("localization_quality_weight", 0.25)),
+                "box_loss_type": str(loss_weights.get("box_loss_type", "ciou")),
             },
             "lr": args.lr,
             "backbone_lr_mult": args.backbone_lr_mult,

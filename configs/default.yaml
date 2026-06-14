@@ -102,6 +102,7 @@ balanced_sampling:
   empty_weight: 0.35
 
 loss_weights:
+  box_loss_type: siou
   box_weight: 0.0
   obj_weight: 0.0
   noobj_weight: 0.0
@@ -139,7 +140,9 @@ loss_weights:
 inference:
   conf_threshold: 0.01
   class_conf_thresholds: {}
-  tta_hflip: false
+  tta_hflip: true
+  tta_fusion: wbf
+  tta_iou_threshold: 0.55
   nms_threshold: 0.5
   nms_type: hard
   merge_nms: false
@@ -156,7 +159,9 @@ validation_metric:
   every: 1
   conf_threshold: 0.01
   class_conf_thresholds: {}
-  tta_hflip: false
+  tta_hflip: true
+  tta_fusion: wbf
+  tta_iou_threshold: 0.55
   nms_threshold: 0.5
   nms_type: hard
   merge_nms: false

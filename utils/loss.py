@@ -4,7 +4,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from utils.box_ops import bbox_ciou, box_iou, wh_iou
+from utils.box_ops import bbox_ciou, bbox_siou, box_iou, wh_iou
 
 
 class AnchorFreeLoss(nn.Module):
@@ -30,6 +30,7 @@ class AnchorFreeLoss(nn.Module):
         varifocal_alpha: float = 0.75,
         varifocal_gamma: float = 2.0,
         assignment_warmup_epochs: int = 5,
+        box_loss_type: str = "ciou",
     ) -> None:
         super().__init__()
         self.image_size = int(image_size)
@@ -49,6 +50,9 @@ class AnchorFreeLoss(nn.Module):
         self.varifocal_alpha = float(varifocal_alpha)
         self.varifocal_gamma = float(varifocal_gamma)
         self.assignment_warmup_epochs = max(0, int(assignment_warmup_epochs))
+        self.box_loss_type = str(box_loss_type).lower()
+        if self.box_loss_type not in {"ciou", "siou"}:
+            raise ValueError(f"Unsupported anchor-free box loss: {box_loss_type}")
         self.current_epoch = 0
         if class_weights is not None:
             self.register_buffer("class_weights", torch.tensor(class_weights, dtype=torch.float32))
@@ -165,9 +169,13 @@ class AnchorFreeLoss(nn.Module):
         if positive.any():
             pred_pos = boxes[positive].float()
             target_pos = box_targets[positive].float()
-            ciou = bbox_ciou(pred_pos, target_pos).clamp(min=-1.0, max=1.0)
+            box_similarity = (
+                bbox_siou(pred_pos, target_pos)
+                if self.box_loss_type == "siou"
+                else bbox_ciou(pred_pos, target_pos)
+            ).clamp(min=-1.0, max=1.0)
             weight = assigned_quality[positive]
-            iou_loss = ((1.0 - ciou) * weight).sum() / normalizer
+            iou_loss = ((1.0 - box_similarity) * weight).sum() / normalizer
             box_loss = iou_loss
             if reg_distributions is not None:
                 positive_indices = positive.nonzero(as_tuple=False)

@@ -91,10 +91,11 @@ python public/tools/evaluate_predictions.py \
 
 - `models/tiny_detector.py` contains the ConvNeXtV2 backbone, necks, and anchor-free head.
 - `utils/loss.py` contains `AnchorFreeLoss`, including task-aligned assignment and Quality Focal Loss.
-- `utils/inference.py` decodes anchor-free boxes and runs per-class NMS without `torchvision.ops.nms`.
+- The anchor-free box regression loss is configurable with `loss_weights.box_loss_type`; the default is SIoU.
+- `utils/inference.py` decodes anchor-free boxes, runs per-class NMS, and fuses horizontal-flip TTA boxes with WBF.
 - `train.py` logs train epoch time separately from validation time, so the 3 minute budget can be checked on Kaggle P100.
-- Validation mAP is computed in-process and the best checkpoint stores the chosen metric/decode settings.
+- Validation mAP is computed in-process with the configured TTA path, and the best checkpoint stores the chosen metric/decode settings.
 
 ## Research Basis
 
-The default choices are based on ConvNeXtV2 for small pretrained ConvNet features, RTMDet/PP-YOLOE-style efficient neck and task-aligned assignment, and VarifocalNet/GFL-style quality-aware class scores for AP ranking.
+The default choices are based on ConvNeXtV2 for small pretrained ConvNet features, RTMDet/PP-YOLOE-style efficient neck and task-aligned assignment, VarifocalNet/GFL-style quality-aware class scores, SIoU box regression, and Weighted Boxes Fusion for augmented-view inference.

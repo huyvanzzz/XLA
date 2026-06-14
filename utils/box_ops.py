@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 import torch
 
 
@@ -61,6 +63,49 @@ def bbox_ciou(boxes1: torch.Tensor, boxes2: torch.Tensor) -> torch.Tensor:
     with torch.no_grad():
         alpha = v / (1.0 - iou + v).clamp(min=1e-6)
     return iou - center_dist / enc_diag.clamp(min=1e-6) - alpha * v
+
+
+def bbox_siou(boxes1: torch.Tensor, boxes2: torch.Tensor) -> torch.Tensor:
+    """SIoU for aligned xyxy boxes, including angle, distance and shape costs."""
+    if boxes1.numel() == 0 or boxes2.numel() == 0:
+        return boxes1.new_zeros((boxes1.shape[0],))
+
+    eps = 1e-6
+    x1 = torch.max(boxes1[:, 0], boxes2[:, 0])
+    y1 = torch.max(boxes1[:, 1], boxes2[:, 1])
+    x2 = torch.min(boxes1[:, 2], boxes2[:, 2])
+    y2 = torch.min(boxes1[:, 3], boxes2[:, 3])
+    inter = (x2 - x1).clamp(min=0) * (y2 - y1).clamp(min=0)
+
+    w1 = (boxes1[:, 2] - boxes1[:, 0]).clamp(min=eps)
+    h1 = (boxes1[:, 3] - boxes1[:, 1]).clamp(min=eps)
+    w2 = (boxes2[:, 2] - boxes2[:, 0]).clamp(min=eps)
+    h2 = (boxes2[:, 3] - boxes2[:, 1]).clamp(min=eps)
+    iou = inter / (w1 * h1 + w2 * h2 - inter).clamp(min=eps)
+
+    cx1 = (boxes1[:, 0] + boxes1[:, 2]) * 0.5
+    cy1 = (boxes1[:, 1] + boxes1[:, 3]) * 0.5
+    cx2 = (boxes2[:, 0] + boxes2[:, 2]) * 0.5
+    cy2 = (boxes2[:, 1] + boxes2[:, 3]) * 0.5
+    delta_x = cx2 - cx1
+    delta_y = cy2 - cy1
+    sigma = torch.sqrt(delta_x.square() + delta_y.square() + eps * eps)
+    sin_alpha_x = delta_x.abs() / sigma
+    sin_alpha_y = delta_y.abs() / sigma
+    sin_alpha = torch.where(sin_alpha_x > math.sqrt(2.0) * 0.5, sin_alpha_y, sin_alpha_x)
+    angle_cost = torch.cos(torch.asin(sin_alpha.clamp(max=1.0)) * 2.0 - math.pi * 0.5)
+
+    enc_w = (torch.max(boxes1[:, 2], boxes2[:, 2]) - torch.min(boxes1[:, 0], boxes2[:, 0])).clamp(min=eps)
+    enc_h = (torch.max(boxes1[:, 3], boxes2[:, 3]) - torch.min(boxes1[:, 1], boxes2[:, 1])).clamp(min=eps)
+    gamma = angle_cost - 2.0
+    distance_cost = 2.0 - torch.exp(gamma * (delta_x / enc_w).square()) - torch.exp(
+        gamma * (delta_y / enc_h).square()
+    )
+
+    omega_w = (w1 - w2).abs() / torch.max(w1, w2)
+    omega_h = (h1 - h2).abs() / torch.max(h1, h2)
+    shape_cost = (1.0 - torch.exp(-omega_w)).pow(4) + (1.0 - torch.exp(-omega_h)).pow(4)
+    return iou - 0.5 * (distance_cost + shape_cost)
 
 
 def nms(boxes: torch.Tensor, scores: torch.Tensor, iou_threshold: float) -> torch.Tensor:

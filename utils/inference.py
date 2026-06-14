@@ -213,6 +213,66 @@ def merge_detections(
     return results[:max_detections]
 
 
+def weighted_box_fusion(
+    detection_sets: list[list[dict[str, object]]],
+    classes: list[str],
+    iou_threshold: float = 0.55,
+    max_detections: int = 100,
+) -> list[dict[str, object]]:
+    """Fuse matching boxes from independent augmented views."""
+    results: list[dict[str, object]] = []
+    for class_name in classes:
+        candidates = []
+        for source_idx, detections in enumerate(detection_sets):
+            for item in detections:
+                if item["class"] == class_name:
+                    candidates.append((source_idx, item))
+        candidates.sort(key=lambda pair: float(pair[1]["confidence"]), reverse=True)
+
+        clusters: list[list[tuple[int, dict[str, object]]]] = []
+        fused_boxes: list[torch.Tensor] = []
+        for source_idx, item in candidates:
+            box = torch.tensor(item["bbox"], dtype=torch.float32)
+            best_idx = -1
+            best_iou = float(iou_threshold)
+            if fused_boxes:
+                ious = box_iou(box.unsqueeze(0), torch.stack(fused_boxes)).squeeze(0)
+                value, index = ious.max(dim=0)
+                if float(value) > best_iou:
+                    best_iou = float(value)
+                    best_idx = int(index)
+
+            if best_idx < 0:
+                clusters.append([(source_idx, item)])
+                fused_boxes.append(box)
+                continue
+
+            clusters[best_idx].append((source_idx, item))
+            cluster_boxes = torch.tensor([entry[1]["bbox"] for entry in clusters[best_idx]], dtype=torch.float32)
+            cluster_scores = torch.tensor(
+                [float(entry[1]["confidence"]) for entry in clusters[best_idx]], dtype=torch.float32
+            )
+            fused_boxes[best_idx] = (cluster_boxes * cluster_scores[:, None]).sum(dim=0) / cluster_scores.sum().clamp(min=1e-6)
+
+        for cluster, box in zip(clusters, fused_boxes):
+            scores = [float(entry[1]["confidence"]) for entry in cluster]
+            # Max scoring keeps a valid one-view detection from being unfairly
+            # penalized when the augmented view misses it.
+            score = max(scores)
+            if box[2] <= box[0] or box[3] <= box[1]:
+                continue
+            results.append(
+                {
+                    "class": class_name,
+                    "confidence": round(score, 6),
+                    "bbox": [round(float(value), 2) for value in box.tolist()],
+                }
+            )
+
+    results.sort(key=lambda item: float(item["confidence"]), reverse=True)
+    return results[:max_detections]
+
+
 def _merge_kept_boxes(
     boxes: torch.Tensor,
     scores: torch.Tensor,
