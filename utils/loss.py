@@ -23,6 +23,10 @@ class AnchorFreeLoss(nn.Module):
         class_weights: list[float] | None = None,
         quality_focal_loss: str = "qfl",
         quality_focal_beta: float = 2.0,
+        reg_max: int = 0,
+        dfl_weight: float = 0.5,
+        localization_quality: bool = False,
+        localization_quality_weight: float = 0.25,
         varifocal_alpha: float = 0.75,
         varifocal_gamma: float = 2.0,
         assignment_warmup_epochs: int = 5,
@@ -38,6 +42,10 @@ class AnchorFreeLoss(nn.Module):
         self.positive_anchor_topk = max(1, int(positive_anchor_topk))
         self.quality_focal_loss = str(quality_focal_loss).lower()
         self.quality_focal_beta = float(quality_focal_beta)
+        self.reg_max = max(0, int(reg_max))
+        self.dfl_weight = float(dfl_weight)
+        self.localization_quality = bool(localization_quality)
+        self.localization_quality_weight = float(localization_quality_weight)
         self.varifocal_alpha = float(varifocal_alpha)
         self.varifocal_gamma = float(varifocal_gamma)
         self.assignment_warmup_epochs = max(0, int(assignment_warmup_epochs))
@@ -53,7 +61,7 @@ class AnchorFreeLoss(nn.Module):
         targets: list[dict[str, torch.Tensor]],
     ) -> tuple[torch.Tensor, dict[str, float]]:
         preds = pred["main"] if isinstance(pred, dict) else pred
-        boxes, cls_logits, centers, strides = self._flatten_predictions(preds)
+        boxes, cls_logits, centers, strides, reg_distributions, quality_logits = self._flatten_predictions(preds)
         batch_size, num_candidates, _ = boxes.shape
         device = boxes.device
 
@@ -61,6 +69,7 @@ class AnchorFreeLoss(nn.Module):
         box_targets = boxes.new_zeros((batch_size, num_candidates, 4))
         positive = torch.zeros((batch_size, num_candidates), dtype=torch.bool, device=device)
         assigned_quality = boxes.new_zeros((batch_size, num_candidates))
+        localization_targets = boxes.new_zeros((batch_size, num_candidates))
 
         for batch_idx, target in enumerate(targets):
             gt_boxes = target["boxes"].to(device=device, dtype=torch.float32)
@@ -128,6 +137,7 @@ class AnchorFreeLoss(nn.Module):
             max_iou = selected_iou.max(dim=0).values
             normalized_alignment = selected_metric / max_metric.unsqueeze(0) * max_iou.unsqueeze(0)
             quality = normalized_alignment[pos_idx, gt_idx].detach().clamp(0.0, 1.0)
+            localization_targets[batch_idx, pos_idx] = ious[pos_idx, gt_idx].detach().to(localization_targets.dtype)
             labels = gt_labels[gt_idx]
             cls_targets[batch_idx, pos_idx, labels] = quality.to(cls_targets.dtype)
             box_targets[batch_idx, pos_idx] = gt_boxes[gt_idx].to(box_targets.dtype)
@@ -142,10 +152,55 @@ class AnchorFreeLoss(nn.Module):
             weight = assigned_quality[positive]
             iou_loss = ((1.0 - ciou) * weight).sum() / normalizer
             box_loss = iou_loss
+            if reg_distributions is not None:
+                positive_indices = positive.nonzero(as_tuple=False)
+                candidate_indices = positive_indices[:, 1]
+                positive_centers = centers[candidate_indices].float()
+                positive_strides = strides[candidate_indices].float()
+                target_distances = torch.stack(
+                    [
+                        (positive_centers[:, 0] - target_pos[:, 0]) / positive_strides[:, 0],
+                        (positive_centers[:, 1] - target_pos[:, 1]) / positive_strides[:, 1],
+                        (target_pos[:, 2] - positive_centers[:, 0]) / positive_strides[:, 0],
+                        (target_pos[:, 3] - positive_centers[:, 1]) / positive_strides[:, 1],
+                    ],
+                    dim=-1,
+                ).clamp(min=0.0, max=self.reg_max - 0.01)
+                positive_distributions = reg_distributions[positive]
+                dfl_loss = self._distribution_focal_loss(positive_distributions, target_distances)
+                dfl_loss = (dfl_loss.mean(dim=-1) * weight).sum() / normalizer
+            else:
+                dfl_loss = boxes.sum() * 0.0
         else:
             iou_loss = boxes.sum() * 0.0
             box_loss = iou_loss
-        loss = self.cls_weight * cls_loss + self.iou_weight * iou_loss
+            dfl_loss = iou_loss
+        if quality_logits is not None:
+            quality_prob = quality_logits.sigmoid()
+            quality_loss_map = F.binary_cross_entropy_with_logits(
+                quality_logits,
+                localization_targets.to(quality_logits.dtype),
+                reduction="none",
+            )
+            quality_normalizer = positive.sum().clamp(min=1).to(quality_logits.dtype)
+            positive_quality_loss = quality_loss_map[positive].sum()
+            negative_quality_loss = quality_loss_map[~positive] * quality_prob[~positive].detach().pow(2.0)
+            max_hard_negatives = min(negative_quality_loss.numel(), int(quality_normalizer.item()) * 3)
+            if max_hard_negatives > 0:
+                negative_quality_loss = negative_quality_loss.topk(max_hard_negatives).values.sum()
+            else:
+                negative_quality_loss = quality_logits.sum() * 0.0
+            localization_quality_loss = (
+                positive_quality_loss + 0.25 * negative_quality_loss
+            ) / quality_normalizer
+        else:
+            localization_quality_loss = boxes.sum() * 0.0
+        loss = (
+            self.cls_weight * cls_loss
+            + self.iou_weight * iou_loss
+            + self.dfl_weight * dfl_loss
+            + self.localization_quality_weight * localization_quality_loss
+        )
         return loss, {
             "loss": float(loss.detach().cpu()),
             "box_loss": float(box_loss.detach().cpu()),
@@ -153,18 +208,23 @@ class AnchorFreeLoss(nn.Module):
             "obj_loss": 0.0,
             "noobj_loss": 0.0,
             "cls_loss": float(cls_loss.detach().cpu()),
-            "quality_loss": 0.0,
+            "quality_loss": float(localization_quality_loss.detach().cpu()),
+            "dfl_loss": float(dfl_loss.detach().cpu()),
             "num_pos": float(positive.sum().detach().cpu()),
             "mean_quality": float(
                 assigned_quality[positive].mean().detach().cpu() if positive.any() else assigned_quality.sum().detach().cpu()
             ),
         }
 
-    def _flatten_predictions(self, preds: list[torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    def _flatten_predictions(
+        self, preds: list[torch.Tensor]
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
         all_boxes = []
         all_logits = []
         all_centers = []
         all_strides = []
+        all_distributions = []
+        all_quality_logits = []
         for pred in preds:
             b, h, w, _, d = pred.shape
             device = pred.device
@@ -176,7 +236,15 @@ class AnchorFreeLoss(nn.Module):
             stride[:, 0] = stride_x
             stride[:, 1] = stride_y
             raw = pred[..., 0, :]
-            distances = F.softplus(raw[..., :4])
+            if self.reg_max > 0:
+                reg_dim = 4 * (self.reg_max + 1)
+                distribution = raw[..., :reg_dim].reshape(b, h, w, 4, self.reg_max + 1)
+                projection = torch.arange(self.reg_max + 1, dtype=pred.dtype, device=device)
+                distances = (distribution.softmax(dim=-1) * projection).sum(dim=-1)
+                all_distributions.append(distribution.reshape(b, -1, 4, self.reg_max + 1))
+            else:
+                reg_dim = 4
+                distances = F.softplus(raw[..., :4])
             scale = torch.tensor([stride_x, stride_y, stride_x, stride_y], dtype=pred.dtype, device=device)
             distances = distances * scale
             center_b = centers.view(1, h, w, 2)
@@ -192,10 +260,32 @@ class AnchorFreeLoss(nn.Module):
             boxes[..., 0::2].clamp_(0, self.image_size)
             boxes[..., 1::2].clamp_(0, self.image_size)
             all_boxes.append(boxes)
-            all_logits.append(raw[..., 4 : 4 + self.num_classes].reshape(b, -1, self.num_classes))
+            all_logits.append(raw[..., reg_dim : reg_dim + self.num_classes].reshape(b, -1, self.num_classes))
+            if self.localization_quality:
+                all_quality_logits.append(raw[..., reg_dim + self.num_classes].reshape(b, -1))
             all_centers.append(centers)
             all_strides.append(stride)
-        return torch.cat(all_boxes, dim=1), torch.cat(all_logits, dim=1), torch.cat(all_centers, dim=0), torch.cat(all_strides, dim=0)
+        distributions = torch.cat(all_distributions, dim=1) if all_distributions else None
+        quality_logits = torch.cat(all_quality_logits, dim=1) if all_quality_logits else None
+        return (
+            torch.cat(all_boxes, dim=1),
+            torch.cat(all_logits, dim=1),
+            torch.cat(all_centers, dim=0),
+            torch.cat(all_strides, dim=0),
+            distributions,
+            quality_logits,
+        )
+
+    @staticmethod
+    def _distribution_focal_loss(logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        left = targets.floor().long()
+        right = (left + 1).clamp(max=logits.shape[-1] - 1)
+        weight_right = targets - left.to(targets.dtype)
+        weight_left = 1.0 - weight_right
+        flat_logits = logits.reshape(-1, logits.shape[-1])
+        loss_left = F.cross_entropy(flat_logits, left.reshape(-1), reduction="none").reshape_as(targets)
+        loss_right = F.cross_entropy(flat_logits, right.reshape(-1), reduction="none").reshape_as(targets)
+        return loss_left * weight_left + loss_right * weight_right
 
     def _varifocal_loss(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
         pred_score = logits.sigmoid()

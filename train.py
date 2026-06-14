@@ -703,16 +703,19 @@ def main() -> None:
     train_sampler = build_balanced_sampler(train_set, classes, config.get("balanced_sampling", {}))
     if train_sampler is not None:
         print("balanced sampling: enabled")
-    train_loader = DataLoader(
-        train_set,
-        batch_size=args.batch_size,
-        shuffle=train_sampler is None,
-        sampler=train_sampler,
-        num_workers=args.num_workers,
-        collate_fn=collate_fn,
-        pin_memory=torch.cuda.is_available(),
-        persistent_workers=args.num_workers > 0,
-    )
+    def build_train_loader() -> DataLoader:
+        return DataLoader(
+            train_set,
+            batch_size=args.batch_size,
+            shuffle=train_sampler is None,
+            sampler=train_sampler,
+            num_workers=args.num_workers,
+            collate_fn=collate_fn,
+            pin_memory=torch.cuda.is_available(),
+            persistent_workers=args.num_workers > 0,
+        )
+
+    train_loader = build_train_loader()
     val_loader = DataLoader(
         val_set,
         batch_size=args.val_batch_size,
@@ -753,6 +756,10 @@ def main() -> None:
             class_weights=class_weights,
             quality_focal_loss=str(loss_weights.get("quality_focal_loss", "qfl")),
             quality_focal_beta=float(loss_weights.get("quality_focal_beta", 2.0)),
+            reg_max=int(model_config.get("reg_max", 0)),
+            dfl_weight=float(loss_weights.get("dfl_weight", 0.5)),
+            localization_quality=bool(model_config.get("localization_quality", False)),
+            localization_quality_weight=float(loss_weights.get("localization_quality_weight", 0.25)),
             varifocal_alpha=float(loss_weights.get("varifocal_alpha", 0.75)),
             varifocal_gamma=float(loss_weights.get("varifocal_gamma", 2.0)),
             assignment_warmup_epochs=int(loss_weights.get("assignment_warmup_epochs", 5)),
@@ -826,7 +833,11 @@ def main() -> None:
         progress = (epoch - args.warmup_epochs) / max(args.epochs - args.warmup_epochs, 1)
         final_factor = float(config.get("lr_final_factor", 0.0))
         cosine = 0.5 * (1.0 + torch.cos(torch.tensor(progress * 3.1415926535))).item()
-        return final_factor + (1.0 - final_factor) * cosine
+        factor = final_factor + (1.0 - final_factor) * cosine
+        close_strong_epoch = int(config.get("augmentation", {}).get("close_strong_aug_epoch", 0))
+        if close_strong_epoch > 0 and epoch + 1 >= close_strong_epoch:
+            factor *= float(config.get("fine_tune_lr_factor", 1.0))
+        return factor
 
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_lambda)
     scaler = torch.amp.GradScaler("cuda", enabled=args.amp and device.type == "cuda")
@@ -856,17 +867,26 @@ def main() -> None:
     strong_aug_closed = False
     aux_head_closed = False
     for epoch in range(1, args.epochs + 1):
+        augmentation_changed = False
         close_mosaic_epoch = int(config["augmentation"].get("close_mosaic_epoch", 0))
         if close_mosaic_epoch > 0 and epoch >= close_mosaic_epoch and not mosaic_closed:
             train_set.augment_config["mosaic_prob"] = 0.0
             mosaic_closed = True
+            augmentation_changed = True
             print(f"closing mosaic augmentation at epoch {epoch}")
         close_strong_aug_epoch = int(config["augmentation"].get("close_strong_aug_epoch", 0))
         if close_strong_aug_epoch > 0 and epoch >= close_strong_aug_epoch and not strong_aug_closed:
             for key in ["random_crop_prob", "random_scale_prob", "random_erasing_prob"]:
                 train_set.augment_config[key] = 0.0
             strong_aug_closed = True
+            augmentation_changed = True
             print(f"closing strong augmentation at epoch {epoch}")
+        if augmentation_changed and args.num_workers > 0:
+            iterator = getattr(train_loader, "_iterator", None)
+            if iterator is not None:
+                iterator._shutdown_workers()
+            train_loader = build_train_loader()
+            print("restarted train dataloader with weak augmentation pipeline")
 
         if config["multi_scale"]["enabled"]:
             train_size = int(random.choice(config["multi_scale"]["sizes"]))
@@ -1029,6 +1049,8 @@ def main() -> None:
                 "quality_weight": float(loss_weights.get("quality_weight", 0.0)),
                 "quality_focal_loss": str(loss_weights.get("quality_focal_loss", "qfl")),
                 "quality_focal_beta": float(loss_weights.get("quality_focal_beta", 2.0)),
+                "dfl_weight": float(loss_weights.get("dfl_weight", 0.5)),
+                "localization_quality_weight": float(loss_weights.get("localization_quality_weight", 0.25)),
             },
             "lr": args.lr,
             "backbone_lr_mult": args.backbone_lr_mult,

@@ -7,6 +7,7 @@ batch_size: 24
 val_batch_size: 64
 lr: 0.00014
 lr_final_factor: 0.05
+fine_tune_lr_factor: 0.5
 backbone_lr_mult: 0.1
 weight_decay: 0.0005
 num_workers: 4
@@ -23,14 +24,14 @@ late_backbone:
   start_epoch: 12
   trainable: stage3_tail_layer4
 backbone_freeze_bn: true
-early_stopping_patience: 15
+early_stopping_patience: 20
 
 validation_loss:
   enabled: false
 
 augmentation:
   mosaic_prob: 0.08
-  close_mosaic_epoch: 60
+  close_mosaic_epoch: 28
   random_crop_prob: 0.12
   min_crop_scale: 0.85
   random_scale_prob: 0.3
@@ -42,7 +43,7 @@ augmentation:
   color_jitter_prob: 0.3
   color_jitter_min: 0.8
   color_jitter_max: 1.2
-  close_strong_aug_epoch: 60
+  close_strong_aug_epoch: 28
 
 model:
   architecture: anchor_free
@@ -67,6 +68,8 @@ model:
   cls_head_channels: 96
   quality_head: false
   reg_initial_distance: 4.0
+  reg_max: 8
+  localization_quality: true
 
 anchors:
   auto: false
@@ -126,6 +129,8 @@ loss_weights:
   quality_weight: 0.0
   quality_focal_loss: qfl
   quality_focal_beta: 2.0
+  dfl_weight: 0.5
+  localization_quality_weight: 0.25
   varifocal_alpha: 0.75
   varifocal_gamma: 2.0
   assignment_warmup_epochs: 5
@@ -142,7 +147,7 @@ inference:
   class_pre_nms_topk: 120
   decode_style: anchor_free
   class_activation: sigmoid
-  quality_score_power: 0.0
+  quality_score_power: 0.5
 
 validation_metric:
   enabled: true
@@ -158,7 +163,7 @@ validation_metric:
   class_pre_nms_topk: 120
   decode_style: anchor_free
   class_activation: sigmoid
-  quality_score_power: 0.0
+  quality_score_power: 0.5
   tune: false
   tune_every: 5
   conf_thresholds: [0.08, 0.1, 0.12, 0.15]

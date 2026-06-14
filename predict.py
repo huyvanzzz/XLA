@@ -73,7 +73,6 @@ def main() -> None:
     if str(model_config.get("architecture", "yolo")) == "anchor_free":
         args.decode_style = "anchor_free"
         args.class_activation = "sigmoid"
-        args.quality_score_power = 0.0
     channels_last = bool(config.get("channels_last", True)) and torch.cuda.is_available()
     if cli_conf_threshold is None:
         args.conf_threshold = checkpoint.get("best_conf_threshold", args.conf_threshold)
@@ -90,7 +89,6 @@ def main() -> None:
     if str(model_config.get("architecture", "yolo")) == "anchor_free":
         args.decode_style = "anchor_free"
         args.class_activation = "sigmoid"
-        args.quality_score_power = 0.0
     tta_hflip = bool(config["inference"].get("tta_hflip", False))
 
     model = TinyDetector(num_classes=len(classes), num_anchors=[len(scale) for scale in anchors], **model_config).to(device)

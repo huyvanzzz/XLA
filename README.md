@@ -23,10 +23,10 @@ The default design follows the research plan:
 - `ConvNeXtV2-Nano` pretrained backbone, with stride 8/16/32 feature maps.
 - Fixed `448x448` input for stable P100 throughput.
 - Lightweight PAN neck with depthwise convolution and ECA attention.
-- Decoupled anchor-free head. Each location predicts `l,t,r,b` distances plus five class-quality logits.
+- Decoupled anchor-free head. Each location predicts distributed `l,t,r,b` distances, five class-quality logits, and a localization-quality score.
 - No separate objectness branch in the default anchor-free path.
 - Center-prior plus task-aligned top-k assignment.
-- Quality Focal Loss with IoU-quality targets and CIoU box loss.
+- Quality Focal Loss, CIoU, Distribution Focal Loss (`reg_max=8`), and localization-quality reranking.
 - AMP, `cudnn.benchmark`, pinned memory, persistent workers, EMA, gradual backbone unfreezing, and train-time logging.
 - Validation after each epoch prints overall `mAP@0.5`, per-class `AP@0.5`, precision, recall, prediction count, and GT count.
 

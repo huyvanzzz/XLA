@@ -1083,10 +1083,15 @@ class AnchorFreeHead(nn.Module):
         dropout: float,
         attention: str = "eca",
         initial_distance: float = 4.0,
+        reg_max: int = 0,
+        localization_quality: bool = False,
     ) -> None:
         super().__init__()
         self.num_classes = num_classes
         self.initial_distance = max(float(initial_distance), 0.1)
+        self.reg_max = max(0, int(reg_max))
+        self.reg_channels = 4 * (self.reg_max + 1) if self.reg_max > 0 else 4
+        self.localization_quality = bool(localization_quality)
         self.reg_tower = nn.Sequential(
             ConvBNAct(in_channels, head_channels, kernel_size=3),
             nn.Conv2d(head_channels, head_channels, kernel_size=3, padding=1, groups=head_channels, bias=False),
@@ -1094,7 +1099,7 @@ class AnchorFreeHead(nn.Module):
             nn.SiLU(inplace=True),
             build_attention(head_channels, attention),
             nn.Dropout2d(dropout) if dropout > 0 else nn.Identity(),
-            nn.Conv2d(head_channels, 4, kernel_size=1),
+            nn.Conv2d(head_channels, self.reg_channels, kernel_size=1),
         )
         self.cls_tower = nn.Sequential(
             ConvBNAct(in_channels, cls_channels, kernel_size=1),
@@ -1105,24 +1110,34 @@ class AnchorFreeHead(nn.Module):
             nn.Dropout2d(dropout * 0.5) if dropout > 0 else nn.Identity(),
             nn.Conv2d(cls_channels, num_classes, kernel_size=1),
         )
+        self.quality_pred = nn.Conv2d(in_channels, 1, kernel_size=1) if self.localization_quality else None
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         reg = self.reg_tower(x)
         cls = self.cls_tower(x)
-        y = torch.cat([reg, cls], dim=1)
+        outputs = [reg, cls]
+        if self.quality_pred is not None:
+            outputs.append(self.quality_pred(x))
+        y = torch.cat(outputs, dim=1)
         return y.permute(0, 2, 3, 1).unsqueeze(3).contiguous()
 
     def initialize_biases(self, objectness_prior: float = 0.01) -> None:
         final_reg = self.reg_tower[-1]
         final_cls = self.cls_tower[-1]
         if isinstance(final_reg, nn.Conv2d) and final_reg.bias is not None:
-            reg_bias = math.log(math.expm1(self.initial_distance))
             with torch.no_grad():
-                final_reg.bias.fill_(reg_bias)
+                if self.reg_max > 0:
+                    final_reg.bias.zero_()
+                else:
+                    reg_bias = math.log(math.expm1(self.initial_distance))
+                    final_reg.bias.fill_(reg_bias)
         if isinstance(final_cls, nn.Conv2d) and final_cls.bias is not None:
             prior = min(max(float(objectness_prior), 1e-4), 1.0 - 1e-4)
             with torch.no_grad():
                 final_cls.bias.fill_(math.log(prior / (1.0 - prior)))
+        if self.quality_pred is not None and self.quality_pred.bias is not None:
+            with torch.no_grad():
+                self.quality_pred.bias.fill_(-4.595)
 
     def initialize_class_biases(self, class_priors: torch.Tensor) -> None:
         final_cls = self.cls_tower[-1]
@@ -1161,12 +1176,16 @@ class TinyDetector(nn.Module):
         quality_head: bool = False,
         architecture: str = "yolo",
         reg_initial_distance: float = 4.0,
+        reg_max: int = 0,
+        localization_quality: bool = False,
         **_: object,
     ) -> None:
         super().__init__()
         self.num_classes = num_classes
         self.architecture = str(architecture)
         self.anchor_free = self.architecture == "anchor_free"
+        self.reg_max = max(0, int(reg_max))
+        self.localization_quality = bool(localization_quality)
         self.quality_head = bool(quality_head)
         self.quality_index = 5 + num_classes if self.quality_head else None
         self.pred_dim = (4 + num_classes) if self.anchor_free else 5 + num_classes + (1 if self.quality_head else 0)
@@ -1218,9 +1237,9 @@ class TinyDetector(nn.Module):
         if self.anchor_free:
             self.main_heads = nn.ModuleList(
                 [
-                    AnchorFreeHead(feature_channels[0], head_channels, cls_channels, num_classes, dropout, attention=str(head_attention), initial_distance=reg_initial_distance),
-                    AnchorFreeHead(feature_channels[1], head_channels, cls_channels, num_classes, dropout, attention=str(head_attention), initial_distance=reg_initial_distance),
-                    AnchorFreeHead(feature_channels[2], head_channels, cls_channels, num_classes, dropout, attention=str(head_attention), initial_distance=reg_initial_distance),
+                    AnchorFreeHead(feature_channels[0], head_channels, cls_channels, num_classes, dropout, attention=str(head_attention), initial_distance=reg_initial_distance, reg_max=self.reg_max, localization_quality=self.localization_quality),
+                    AnchorFreeHead(feature_channels[1], head_channels, cls_channels, num_classes, dropout, attention=str(head_attention), initial_distance=reg_initial_distance, reg_max=self.reg_max, localization_quality=self.localization_quality),
+                    AnchorFreeHead(feature_channels[2], head_channels, cls_channels, num_classes, dropout, attention=str(head_attention), initial_distance=reg_initial_distance, reg_max=self.reg_max, localization_quality=self.localization_quality),
                 ]
             )
             self.aux_head_enabled = False
