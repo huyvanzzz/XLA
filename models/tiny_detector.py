@@ -64,8 +64,23 @@ class GRN(nn.Module):
         return self.gamma * (x * nx) + self.beta + x
 
 
+class DropPath(nn.Module):
+    def __init__(self, drop_prob: float = 0.0) -> None:
+        super().__init__()
+        self.base_drop_prob = float(drop_prob)
+        self.drop_prob = float(drop_prob)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if self.drop_prob <= 0.0 or not self.training:
+            return x
+        keep_prob = 1.0 - self.drop_prob
+        shape = (x.shape[0],) + (1,) * (x.ndim - 1)
+        random_tensor = keep_prob + torch.rand(shape, dtype=x.dtype, device=x.device)
+        return x * random_tensor.floor() / keep_prob
+
+
 class ConvNeXtV2Block(nn.Module):
-    def __init__(self, channels: int) -> None:
+    def __init__(self, channels: int, drop_path: float = 0.0) -> None:
         super().__init__()
         self.dwconv = nn.Conv2d(channels, channels, kernel_size=7, padding=3, groups=channels)
         self.norm = nn.LayerNorm(channels, eps=1e-6)
@@ -73,6 +88,7 @@ class ConvNeXtV2Block(nn.Module):
         self.act = nn.GELU()
         self.grn = GRN(4 * channels)
         self.pwconv2 = nn.Linear(4 * channels, channels)
+        self.drop_path = DropPath(drop_path)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         identity = x
@@ -84,7 +100,7 @@ class ConvNeXtV2Block(nn.Module):
         x = self.grn(x)
         x = self.pwconv2(x)
         x = x.permute(0, 3, 1, 2)
-        return identity + x
+        return identity + self.drop_path(x)
 
 
 class ConvNeXtV2Backbone(nn.Module):
@@ -97,22 +113,27 @@ class ConvNeXtV2Backbone(nn.Module):
         "convnextv2_nano": {"depths": [2, 2, 8, 2], "dims": [80, 160, 320, 640]},
     }
 
-    def __init__(self, variant: str = "convnextv2_nano", pretrained: bool = True) -> None:
+    def __init__(self, variant: str = "convnextv2_nano", pretrained: bool = True, drop_path_rate: float = 0.0) -> None:
         super().__init__()
         if variant not in self.CONFIGS:
             raise ValueError(f"Unsupported ConvNeXt V2 variant: {variant}")
         config = self.CONFIGS[variant]
         dims = config["dims"]
         depths = config["depths"]
+        drop_rates = torch.linspace(0, float(drop_path_rate), sum(depths)).tolist()
+        block_idx = 0
 
         self.stem = nn.Sequential(nn.Conv2d(3, dims[0], kernel_size=4, stride=4), LayerNorm2d(dims[0], eps=1e-6))
-        self.stage1 = nn.Sequential(*[ConvNeXtV2Block(dims[0]) for _ in range(depths[0])])
+        self.stage1 = nn.Sequential(*[ConvNeXtV2Block(dims[0], drop_rates[block_idx + i]) for i in range(depths[0])])
+        block_idx += depths[0]
         self.down1 = nn.Sequential(LayerNorm2d(dims[0], eps=1e-6), nn.Conv2d(dims[0], dims[1], kernel_size=2, stride=2))
-        self.stage2 = nn.Sequential(*[ConvNeXtV2Block(dims[1]) for _ in range(depths[1])])
+        self.stage2 = nn.Sequential(*[ConvNeXtV2Block(dims[1], drop_rates[block_idx + i]) for i in range(depths[1])])
+        block_idx += depths[1]
         self.down2 = nn.Sequential(LayerNorm2d(dims[1], eps=1e-6), nn.Conv2d(dims[1], dims[2], kernel_size=2, stride=2))
-        self.stage3 = nn.Sequential(*[ConvNeXtV2Block(dims[2]) for _ in range(depths[2])])
+        self.stage3 = nn.Sequential(*[ConvNeXtV2Block(dims[2], drop_rates[block_idx + i]) for i in range(depths[2])])
+        block_idx += depths[2]
         self.down3 = nn.Sequential(LayerNorm2d(dims[2], eps=1e-6), nn.Conv2d(dims[2], dims[3], kernel_size=2, stride=2))
-        self.stage4 = nn.Sequential(*[ConvNeXtV2Block(dims[3]) for _ in range(depths[3])])
+        self.stage4 = nn.Sequential(*[ConvNeXtV2Block(dims[3], drop_rates[block_idx + i]) for i in range(depths[3])])
 
         if pretrained:
             state = torch.hub.load_state_dict_from_url(self.WEIGHTS[variant], progress=True, map_location="cpu")
@@ -1178,6 +1199,7 @@ class TinyDetector(nn.Module):
         reg_initial_distance: float = 4.0,
         reg_max: int = 0,
         localization_quality: bool = False,
+        drop_path_rate: float = 0.0,
         **_: object,
     ) -> None:
         super().__init__()
@@ -1201,7 +1223,7 @@ class TinyDetector(nn.Module):
             self.convnext = ConvNeXtBackbone(variant=backbone, pretrained=pretrained)
             feature_channels = ConvNeXtBackbone.CONFIGS[backbone]["dims"][1:]
         elif backbone in {"convnextv2_pico", "convnextv2_nano"}:
-            self.convnext = ConvNeXtV2Backbone(variant=backbone, pretrained=pretrained)
+            self.convnext = ConvNeXtV2Backbone(variant=backbone, pretrained=pretrained, drop_path_rate=drop_path_rate)
             feature_channels = ConvNeXtV2Backbone.CONFIGS[backbone]["dims"][1:]
         elif backbone == "eelan":
             c1 = base_channels

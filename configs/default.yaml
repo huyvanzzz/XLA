@@ -9,7 +9,7 @@ lr: 0.00014
 lr_final_factor: 0.05
 fine_tune_lr_factor: 0.5
 backbone_lr_mult: 0.1
-weight_decay: 0.0005
+weight_decay: 0.01
 num_workers: 4
 channels_last: true
 cudnn_benchmark: true
@@ -69,7 +69,8 @@ model:
   quality_head: false
   reg_initial_distance: 4.0
   reg_max: 8
-  localization_quality: true
+  localization_quality: false
+  drop_path_rate: 0.1
 
 anchors:
   auto: false
@@ -130,7 +131,7 @@ loss_weights:
   quality_focal_loss: qfl
   quality_focal_beta: 2.0
   dfl_weight: 0.5
-  localization_quality_weight: 0.25
+  localization_quality_weight: 0.0
   varifocal_alpha: 0.75
   varifocal_gamma: 2.0
   assignment_warmup_epochs: 5
@@ -147,7 +148,7 @@ inference:
   class_pre_nms_topk: 120
   decode_style: anchor_free
   class_activation: sigmoid
-  quality_score_power: 0.5
+  quality_score_power: 0.0
 
 validation_metric:
   enabled: true
@@ -163,7 +164,7 @@ validation_metric:
   class_pre_nms_topk: 120
   decode_style: anchor_free
   class_activation: sigmoid
-  quality_score_power: 0.5
+  quality_score_power: 0.0
   tune: false
   tune_every: 5
   conf_thresholds: [0.08, 0.1, 0.12, 0.15]

@@ -449,6 +449,12 @@ def set_backbone_trainable(model: TinyDetector, warmup_frozen: bool, trainable_m
             parameter.requires_grad_(False if warmup_frozen else trainable)
         else:
             parameter.requires_grad_(True)
+    for module in model.modules():
+        drop_path = getattr(module, "drop_path", None)
+        if drop_path is None or not hasattr(drop_path, "base_drop_prob"):
+            continue
+        block_trainable = any(parameter.requires_grad for parameter in module.parameters())
+        drop_path.drop_prob = drop_path.base_drop_prob if block_trainable else 0.0
 
 
 def set_frozen_feature_extractor_eval(model: TinyDetector) -> None:

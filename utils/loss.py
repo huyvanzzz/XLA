@@ -95,6 +95,23 @@ class AnchorFreeLoss(nn.Module):
             # boxes may contain no feature point, so only those GTs fall back
             # to the center prior.
             candidate_mask = in_box.clone()
+            if self.reg_max > 0:
+                normalized_ltrb = torch.stack(
+                    [
+                        (centers_f[:, None, 0] - gt_boxes[None, :, 0]) / strides_f[:, None, 0],
+                        (centers_f[:, None, 1] - gt_boxes[None, :, 1]) / strides_f[:, None, 1],
+                        (gt_boxes[None, :, 2] - centers_f[:, None, 0]) / strides_f[:, None, 0],
+                        (gt_boxes[None, :, 3] - centers_f[:, None, 1]) / strides_f[:, None, 1],
+                    ],
+                    dim=-1,
+                )
+                representable = (
+                    (normalized_ltrb.min(dim=-1).values >= 0.0)
+                    & (normalized_ltrb.max(dim=-1).values <= self.reg_max - 0.01)
+                )
+                feasible = candidate_mask & representable
+                has_feasible_point = feasible.any(dim=0)
+                candidate_mask[:, has_feasible_point] = feasible[:, has_feasible_point]
             no_inside_point = ~candidate_mask.any(dim=0)
             if no_inside_point.any():
                 candidate_mask[:, no_inside_point] = in_center[:, no_inside_point]
@@ -165,10 +182,16 @@ class AnchorFreeLoss(nn.Module):
                         (target_pos[:, 3] - positive_centers[:, 1]) / positive_strides[:, 1],
                     ],
                     dim=-1,
-                ).clamp(min=0.0, max=self.reg_max - 0.01)
+                )
+                dfl_valid = (
+                    (target_distances.min(dim=-1).values >= 0.0)
+                    & (target_distances.max(dim=-1).values <= self.reg_max - 0.01)
+                )
+                target_distances = target_distances.clamp(min=0.0, max=self.reg_max - 0.01)
                 positive_distributions = reg_distributions[positive]
                 dfl_loss = self._distribution_focal_loss(positive_distributions, target_distances)
-                dfl_loss = (dfl_loss.mean(dim=-1) * weight).sum() / normalizer
+                dfl_weight = weight * dfl_valid.to(weight.dtype)
+                dfl_loss = (dfl_loss.mean(dim=-1) * dfl_weight).sum() / dfl_weight.sum().clamp(min=1.0)
             else:
                 dfl_loss = boxes.sum() * 0.0
         else:
@@ -291,17 +314,24 @@ class AnchorFreeLoss(nn.Module):
         pred_score = logits.sigmoid()
         focal_weight = self.varifocal_alpha * pred_score.pow(self.varifocal_gamma) * (targets <= 0).to(logits.dtype) + targets
         loss = F.binary_cross_entropy_with_logits(logits, targets, reduction="none") * focal_weight
-        if self.class_weights is not None:
-            loss = loss * self.class_weights.to(logits.device, logits.dtype).view(1, 1, -1)
-        return loss
+        return self._equalize_class_weights(loss, targets)
 
     def _quality_focal_loss(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
         pred_score = logits.sigmoid()
         scale_factor = (targets - pred_score).abs().pow(self.quality_focal_beta)
         loss = F.binary_cross_entropy_with_logits(logits, targets, reduction="none") * scale_factor
-        if self.class_weights is not None:
-            loss = loss * self.class_weights.to(logits.device, logits.dtype).view(1, 1, -1)
-        return loss
+        return self._equalize_class_weights(loss, targets)
+
+    def _equalize_class_weights(self, loss: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        if self.class_weights is None:
+            return loss
+        class_weights = self.class_weights.to(loss.device, loss.dtype).view(1, 1, -1)
+        positive = targets > 0
+        # Up-weight rare-class positives, while mildly attenuating their
+        # overwhelming negative gradients as in EQL-style dense detection.
+        negative_weights = torch.minimum(torch.ones_like(class_weights), class_weights.reciprocal())
+        weights = torch.where(positive, class_weights, negative_weights)
+        return loss * weights
 
     def _quality_classification_loss(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
         if self.quality_focal_loss == "varifocal":
