@@ -40,6 +40,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--decode_style", choices=["standard", "yolov7", "anchor_free"])
     parser.add_argument("--class_activation", choices=["softmax", "sigmoid"])
     parser.add_argument("--quality_score_power", type=float)
+    parser.add_argument("--distribution_quality_power", type=float)
     parser.add_argument("--batch_size", type=int, default=16)
     return parser.parse_args()
 
@@ -47,7 +48,7 @@ def parse_args() -> argparse.Namespace:
 def apply_config(args: argparse.Namespace) -> argparse.Namespace:
     config = load_config(args.config)
     inference = config["inference"]
-    for name in ["conf_threshold", "nms_threshold", "nms_type", "merge_nms", "max_detections", "pre_nms_topk", "class_pre_nms_topk", "decode_style", "class_activation", "quality_score_power"]:
+    for name in ["conf_threshold", "nms_threshold", "nms_type", "merge_nms", "max_detections", "pre_nms_topk", "class_pre_nms_topk", "decode_style", "class_activation", "quality_score_power", "distribution_quality_power"]:
         if getattr(args, name) is None:
             setattr(args, name, inference[name])
     return args
@@ -61,6 +62,7 @@ def main() -> None:
     cli_decode_style = args.decode_style
     cli_class_activation = args.class_activation
     cli_quality_score_power = args.quality_score_power
+    cli_distribution_quality_power = args.distribution_quality_power
     args = apply_config(args)
     image_dir = Path(args.image_dir)
     checkpoint_path = Path(args.checkpoint)
@@ -92,6 +94,8 @@ def main() -> None:
         args.class_activation = checkpoint.get("class_activation", args.class_activation)
     if cli_quality_score_power is None:
         args.quality_score_power = checkpoint.get("quality_score_power", args.quality_score_power)
+    if cli_distribution_quality_power is None:
+        args.distribution_quality_power = checkpoint.get("distribution_quality_power", args.distribution_quality_power)
     if str(model_config.get("architecture", "yolo")) == "anchor_free":
         args.decode_style = "anchor_free"
         args.class_activation = "sigmoid"
@@ -147,6 +151,7 @@ def main() -> None:
                     decode_style=args.decode_style,
                     class_activation=args.class_activation,
                     quality_score_power=float(args.quality_score_power),
+                    distribution_quality_power=float(args.distribution_quality_power),
                 )
                 if pred_flip is not None:
                     flip_boxes = decode_predictions(
@@ -168,6 +173,7 @@ def main() -> None:
                         decode_style=args.decode_style,
                         class_activation=args.class_activation,
                         quality_score_power=float(args.quality_score_power),
+                        distribution_quality_power=float(args.distribution_quality_power),
                     )
                     flip_boxes = flip_detections_horizontally(flip_boxes, orig_w)
                     if tta_fusion == "wbf":

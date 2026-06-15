@@ -24,11 +24,14 @@ class PredictCliTest(unittest.TestCase):
                 "predictions.json",
                 "--batch_size",
                 "8",
+                "--distribution_quality_power",
+                "0.25",
             ],
         ):
             args = predict.parse_args()
 
         self.assertEqual(args.batch_size, 8)
+        self.assertEqual(args.distribution_quality_power, 0.25)
 
 
 class DetectionMathTest(unittest.TestCase):

@@ -55,6 +55,7 @@ def decode_predictions(
     decode_style: str = "standard",
     class_activation: str = "softmax",
     quality_score_power: float = 0.0,
+    distribution_quality_power: float = 0.0,
 ) -> list[dict[str, object]]:
     if isinstance(pred, dict):
         preds = pred["main"]
@@ -84,6 +85,7 @@ def decode_predictions(
                 orig_height,
                 preserve_aspect=preserve_aspect,
                 quality_score_power=quality_score_power,
+                distribution_quality_power=distribution_quality_power,
             )
         else:
             boxes, scores, labels = _decode_scale(
@@ -372,6 +374,7 @@ def _decode_anchor_free_scale(
     orig_height: int,
     preserve_aspect: bool = True,
     quality_score_power: float = 0.0,
+    distribution_quality_power: float = 0.0,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     device = pred.device
     if pred.dim() == 4:
@@ -392,11 +395,14 @@ def _decode_anchor_free_scale(
     if reg_dim > 4 and reg_dim % 4 == 0:
         reg_bins = reg_dim // 4
         distribution = pred[..., :reg_dim].reshape(grid_h, grid_w, 4, reg_bins)
+        distribution_probs = distribution.softmax(dim=-1)
         projection = torch.arange(reg_bins, dtype=pred.dtype, device=device)
-        distances = (distribution.softmax(dim=-1) * projection).sum(dim=-1)
+        distances = (distribution_probs * projection).sum(dim=-1)
+        distribution_quality = distribution_probs.max(dim=-1).values.mean(dim=-1).reshape(-1)
     else:
         reg_dim = 4
         distances = torch.nn.functional.softplus(pred[..., :4])
+        distribution_quality = None
     distances = distances * torch.tensor([stride_x, stride_y, stride_x, stride_y], device=device, dtype=pred.dtype)
     boxes = torch.stack(
         [
@@ -412,6 +418,8 @@ def _decode_anchor_free_scale(
     if has_quality and quality_score_power > 0.0:
         quality_scores = pred[..., reg_dim + len(classes)].sigmoid().reshape(-1)
         scores = scores * quality_scores.clamp(min=1e-6).pow(float(quality_score_power))
+    if distribution_quality is not None and distribution_quality_power > 0.0:
+        scores = scores * distribution_quality.clamp(min=1e-6).pow(float(distribution_quality_power))
     if preserve_aspect:
         scale = min(image_size / orig_width, image_size / orig_height)
         new_w = round(orig_width * scale)

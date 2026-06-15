@@ -567,6 +567,7 @@ def evaluate_map(
     decode_style: str,
     class_activation: str,
     quality_score_power: float,
+    distribution_quality_power: float,
     tta_hflip: bool,
     tta_fusion: str,
     tta_iou_threshold: float,
@@ -597,6 +598,7 @@ def evaluate_map(
                 decode_style=decode_style,
                 class_activation=class_activation,
                 quality_score_power=quality_score_power,
+                distribution_quality_power=distribution_quality_power,
             )
             if outputs_flip is not None:
                 width = int(target["orig_width"])
@@ -618,6 +620,7 @@ def evaluate_map(
                     decode_style=decode_style,
                     class_activation=class_activation,
                     quality_score_power=quality_score_power,
+                    distribution_quality_power=distribution_quality_power,
                 )
                 flip_boxes = flip_detections_horizontally(flip_boxes, width)
                 if tta_fusion == "wbf":
@@ -682,6 +685,7 @@ def evaluate_map_with_optional_tuning(
                 decode_style=str(metric_config.get("decode_style", "standard")),
                 class_activation=str(metric_config.get("class_activation", "softmax")),
                 quality_score_power=float(metric_config.get("quality_score_power", 0.0)),
+                distribution_quality_power=float(metric_config.get("distribution_quality_power", 0.0)),
                 tta_hflip=use_tta,
                 tta_fusion=str(metric_config.get("tta_fusion", "wbf")).lower(),
                 tta_iou_threshold=float(metric_config.get("tta_iou_threshold", 0.55)),
@@ -918,7 +922,6 @@ def main() -> None:
     epochs_without_improvement = 0
     mosaic_closed = False
     strong_aug_closed = False
-    copy_paste_closed = False
     aux_head_closed = False
     for epoch in range(1, args.epochs + 1):
         augmentation_changed = False
@@ -935,12 +938,6 @@ def main() -> None:
             strong_aug_closed = True
             augmentation_changed = True
             print(f"closing strong augmentation at epoch {epoch}")
-        close_copy_paste_epoch = int(config["augmentation"].get("close_copy_paste_epoch", 0))
-        if close_copy_paste_epoch > 0 and epoch >= close_copy_paste_epoch and not copy_paste_closed:
-            train_set.augment_config["copy_paste_prob"] = 0.0
-            copy_paste_closed = True
-            augmentation_changed = True
-            print(f"closing copy-paste augmentation at epoch {epoch}")
         if augmentation_changed and args.num_workers > 0:
             iterator = getattr(train_loader, "_iterator", None)
             if iterator is not None:
@@ -1064,7 +1061,6 @@ def main() -> None:
                 "mosaic_prob": float(train_set.augment_config.get("mosaic_prob", 0.0)),
                 "random_crop_prob": float(train_set.augment_config.get("random_crop_prob", 0.0)),
                 "random_scale_prob": float(train_set.augment_config.get("random_scale_prob", 0.0)),
-                "copy_paste_prob": float(train_set.augment_config.get("copy_paste_prob", 0.0)),
                 "color_jitter_prob": float(train_set.augment_config.get("color_jitter_prob", 0.0)),
             },
             "train": train_logs,
@@ -1139,6 +1135,9 @@ def main() -> None:
             "decode_style": config["validation_metric"].get("decode_style", config["inference"].get("decode_style", "standard")),
             "class_activation": config["validation_metric"].get("class_activation", config["inference"].get("class_activation", "softmax")),
             "quality_score_power": config["validation_metric"].get("quality_score_power", config["inference"].get("quality_score_power", 0.0)),
+            "distribution_quality_power": config["validation_metric"].get(
+                "distribution_quality_power", config["inference"].get("distribution_quality_power", 0.0)
+            ),
             "tta_hflip": bool(metric_logs.get("tta_hflip", False)) if metric_logs is not None else False,
             "tta_fusion": metric_logs.get("tta_fusion", "none") if metric_logs is not None else "none",
         }
