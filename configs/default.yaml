@@ -31,19 +31,26 @@ validation_loss:
 
 augmentation:
   mosaic_prob: 0.08
-  close_mosaic_epoch: 28
+  close_mosaic_epoch: 40
   random_crop_prob: 0.12
   min_crop_scale: 0.85
   random_scale_prob: 0.3
   min_scale: 0.85
   max_scale: 1.15
+  copy_paste_prob: 0.18
+  copy_paste_max_objects: 2
+  copy_paste_classes: [chair, cat, dog]
+  copy_paste_min_box: 8.0
+  copy_paste_scale_min: 0.75
+  copy_paste_scale_max: 1.15
+  close_copy_paste_epoch: 50
   random_erasing_prob: 0.0
   random_erasing_min_area: 0.02
   random_erasing_max_area: 0.1
   color_jitter_prob: 0.3
   color_jitter_min: 0.8
   color_jitter_max: 1.2
-  close_strong_aug_epoch: 28
+  close_strong_aug_epoch: 45
 
 model:
   architecture: anchor_free
@@ -162,6 +169,8 @@ validation_metric:
   tta_hflip: true
   tta_fusion: wbf
   tta_iou_threshold: 0.55
+  tta_start_epoch: 20
+  tta_every: 5
   nms_threshold: 0.5
   nms_type: hard
   merge_nms: false

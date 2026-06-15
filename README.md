@@ -92,9 +92,10 @@ python public/tools/evaluate_predictions.py \
 - `models/tiny_detector.py` contains the ConvNeXtV2 backbone, necks, and anchor-free head.
 - `utils/loss.py` contains `AnchorFreeLoss`, including task-aligned assignment and Quality Focal Loss.
 - The anchor-free box regression loss is configurable with `loss_weights.box_loss_type`; the default is SIoU.
+- Training uses class-targeted Copy-Paste augmentation for harder/rarer classes, then closes it late in training.
 - `utils/inference.py` decodes anchor-free boxes, runs per-class NMS, and fuses horizontal-flip TTA boxes with WBF.
 - `train.py` logs train epoch time separately from validation time, so the 3 minute budget can be checked on Kaggle P100.
-- Validation mAP is computed in-process with the configured TTA path, and the best checkpoint stores the chosen metric/decode settings.
+- Validation mAP is computed in-process; horizontal-flip TTA can be scheduled with `tta_start_epoch` and `tta_every`.
 
 ## Research Basis
 

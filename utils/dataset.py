@@ -24,7 +24,7 @@ class DetectionDataset(Dataset):
         classes: list[str],
         image_size: int = 416,
         augment: bool = False,
-        augment_config: dict[str, float] | None = None,
+        augment_config: dict[str, Any] | None = None,
         preserve_aspect: bool = True,
     ) -> None:
         self.annotation_path = Path(annotation_path)
@@ -55,6 +55,16 @@ class DetectionDataset(Dataset):
                     "annotations": grouped.get(image_id, []),
                 }
             )
+        self.class_image_indices: dict[int, list[int]] = defaultdict(list)
+        for image_idx, item in enumerate(self.images):
+            labels = {self.class_to_idx[ann["class"]] for ann in item["annotations"] if ann["class"] in self.class_to_idx}
+            for label in labels:
+                self.class_image_indices[label].append(image_idx)
+
+        copy_classes = self.augment_config.get("copy_paste_classes", [])
+        self.copy_paste_label_indices = [
+            self.class_to_idx[name] for name in copy_classes if isinstance(name, str) and name in self.class_to_idx
+        ]
 
     def __len__(self) -> int:
         return len(self.images)
@@ -67,6 +77,7 @@ class DetectionDataset(Dataset):
             image, boxes_t, labels_t, orig_w, orig_h = self._load_raw(idx)
 
         if self.augment:
+            image, boxes_t, labels_t = self._copy_paste(image, boxes_t, labels_t)
             image, boxes_t, labels_t = self._augment(image, boxes_t, labels_t)
 
         if self.preserve_aspect:
@@ -175,6 +186,82 @@ class DetectionDataset(Dataset):
         if random.random() < jitter_prob:
             image = ImageEnhance.Contrast(image).enhance(random.uniform(jitter_min, jitter_max))
         return image, boxes, labels
+
+    def _copy_paste(
+        self,
+        image: Image.Image,
+        boxes: torch.Tensor,
+        labels: torch.Tensor,
+    ) -> tuple[Image.Image, torch.Tensor, torch.Tensor]:
+        prob = float(self.augment_config.get("copy_paste_prob", 0.0))
+        if random.random() >= prob:
+            return image, boxes, labels
+        max_objects = int(self.augment_config.get("copy_paste_max_objects", 1))
+        if max_objects <= 0:
+            return image, boxes, labels
+
+        target_width, target_height = image.size
+        min_box = float(self.augment_config.get("copy_paste_min_box", 8.0))
+        scale_min = float(self.augment_config.get("copy_paste_scale_min", 0.75))
+        scale_max = float(self.augment_config.get("copy_paste_scale_max", 1.15))
+        target_image = image.copy()
+        pasted_boxes = []
+        pasted_labels = []
+
+        preferred_labels = self.copy_paste_label_indices or list(self.class_image_indices.keys())
+        if not preferred_labels:
+            return image, boxes, labels
+
+        for _ in range(max_objects):
+            label_idx = random.choice(preferred_labels)
+            source_indices = self.class_image_indices.get(label_idx, [])
+            if not source_indices:
+                continue
+            source_image, source_boxes, source_labels, _, _ = self._load_raw(random.choice(source_indices))
+            matching = (source_labels == label_idx).nonzero(as_tuple=False).flatten()
+            if matching.numel() == 0:
+                continue
+            source_box = source_boxes[int(random.choice(matching).item())]
+            x1, y1, x2, y2 = [int(round(float(v))) for v in source_box.tolist()]
+            x1 = max(0, min(x1, source_image.width - 1))
+            y1 = max(0, min(y1, source_image.height - 1))
+            x2 = max(x1 + 1, min(x2, source_image.width))
+            y2 = max(y1 + 1, min(y2, source_image.height))
+            crop = source_image.crop((x1, y1, x2, y2))
+            crop_width, crop_height = crop.size
+            if crop_width < min_box or crop_height < min_box:
+                continue
+
+            scale = random.uniform(scale_min, scale_max)
+            crop_width = max(int(round(crop_width * scale)), int(min_box))
+            crop_height = max(int(round(crop_height * scale)), int(min_box))
+            if crop_width >= target_width or crop_height >= target_height:
+                max_scale = min((target_width - 1) / max(crop_width, 1), (target_height - 1) / max(crop_height, 1))
+                if max_scale <= 0:
+                    continue
+                crop_width = max(int(round(crop_width * max_scale)), int(min_box))
+                crop_height = max(int(round(crop_height * max_scale)), int(min_box))
+            if crop_width >= target_width or crop_height >= target_height:
+                continue
+
+            crop = crop.resize((crop_width, crop_height), Image.BILINEAR)
+            left = random.randint(0, target_width - crop_width)
+            top = random.randint(0, target_height - crop_height)
+            target_image.paste(crop, (left, top))
+            pasted_boxes.append([left, top, left + crop_width, top + crop_height])
+            pasted_labels.append(label_idx)
+
+        if not pasted_boxes:
+            return image, boxes, labels
+        pasted_boxes_t = torch.tensor(pasted_boxes, dtype=torch.float32)
+        pasted_labels_t = torch.tensor(pasted_labels, dtype=torch.long)
+        if boxes.numel() > 0:
+            boxes = torch.cat([boxes, pasted_boxes_t], dim=0)
+            labels = torch.cat([labels, pasted_labels_t], dim=0)
+        else:
+            boxes = pasted_boxes_t
+            labels = pasted_labels_t
+        return target_image, boxes, labels
 
     def _random_scale(self, image: Image.Image, boxes: torch.Tensor) -> tuple[Image.Image, torch.Tensor]:
         prob = float(self.augment_config.get("random_scale_prob", 0.0))

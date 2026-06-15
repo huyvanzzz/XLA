@@ -637,6 +637,8 @@ def evaluate_map(
     result = evaluate_predictions_map(ground_truth_path, predictions, classes, iou_threshold=0.5)
     result["conf_threshold"] = conf_threshold
     result["nms_threshold"] = nms_threshold
+    result["tta_hflip"] = bool(tta_hflip)
+    result["tta_fusion"] = tta_fusion if tta_hflip else "none"
     return result
 
 
@@ -652,6 +654,9 @@ def evaluate_map_with_optional_tuning(
     epoch: int,
 ) -> dict[str, object]:
     should_tune = bool(metric_config.get("tune", False)) and epoch % int(metric_config.get("tune_every", 1)) == 0
+    tta_every = max(1, int(metric_config.get("tta_every", 1)))
+    tta_start_epoch = max(1, int(metric_config.get("tta_start_epoch", 1)))
+    use_tta = bool(metric_config.get("tta_hflip", False)) and epoch >= tta_start_epoch and epoch % tta_every == 0
     conf_values = metric_config["conf_thresholds"] if should_tune else [metric_config["conf_threshold"]]
     nms_values = metric_config["nms_thresholds"] if should_tune else [metric_config["nms_threshold"]]
     best = None
@@ -677,7 +682,7 @@ def evaluate_map_with_optional_tuning(
                 decode_style=str(metric_config.get("decode_style", "standard")),
                 class_activation=str(metric_config.get("class_activation", "softmax")),
                 quality_score_power=float(metric_config.get("quality_score_power", 0.0)),
-                tta_hflip=bool(metric_config.get("tta_hflip", False)),
+                tta_hflip=use_tta,
                 tta_fusion=str(metric_config.get("tta_fusion", "wbf")).lower(),
                 tta_iou_threshold=float(metric_config.get("tta_iou_threshold", 0.55)),
             )
@@ -913,6 +918,7 @@ def main() -> None:
     epochs_without_improvement = 0
     mosaic_closed = False
     strong_aug_closed = False
+    copy_paste_closed = False
     aux_head_closed = False
     for epoch in range(1, args.epochs + 1):
         augmentation_changed = False
@@ -929,6 +935,12 @@ def main() -> None:
             strong_aug_closed = True
             augmentation_changed = True
             print(f"closing strong augmentation at epoch {epoch}")
+        close_copy_paste_epoch = int(config["augmentation"].get("close_copy_paste_epoch", 0))
+        if close_copy_paste_epoch > 0 and epoch >= close_copy_paste_epoch and not copy_paste_closed:
+            train_set.augment_config["copy_paste_prob"] = 0.0
+            copy_paste_closed = True
+            augmentation_changed = True
+            print(f"closing copy-paste augmentation at epoch {epoch}")
         if augmentation_changed and args.num_workers > 0:
             iterator = getattr(train_loader, "_iterator", None)
             if iterator is not None:
@@ -1038,7 +1050,8 @@ def main() -> None:
                 f"precision={metric_logs['precision']:.4f} "
                 f"recall={metric_logs['recall']:.4f} "
                 f"conf={metric_logs['conf_threshold']:.2f} "
-                f"nms={metric_logs['nms_threshold']:.2f}"
+                f"nms={metric_logs['nms_threshold']:.2f} "
+                f"tta={metric_logs.get('tta_hflip', False)}"
             )
             print_per_class_map("per-class AP@0.5:", metric_logs)
 
@@ -1051,6 +1064,7 @@ def main() -> None:
                 "mosaic_prob": float(train_set.augment_config.get("mosaic_prob", 0.0)),
                 "random_crop_prob": float(train_set.augment_config.get("random_crop_prob", 0.0)),
                 "random_scale_prob": float(train_set.augment_config.get("random_scale_prob", 0.0)),
+                "copy_paste_prob": float(train_set.augment_config.get("copy_paste_prob", 0.0)),
                 "color_jitter_prob": float(train_set.augment_config.get("color_jitter_prob", 0.0)),
             },
             "train": train_logs,
@@ -1125,6 +1139,8 @@ def main() -> None:
             "decode_style": config["validation_metric"].get("decode_style", config["inference"].get("decode_style", "standard")),
             "class_activation": config["validation_metric"].get("class_activation", config["inference"].get("class_activation", "softmax")),
             "quality_score_power": config["validation_metric"].get("quality_score_power", config["inference"].get("quality_score_power", 0.0)),
+            "tta_hflip": bool(metric_logs.get("tta_hflip", False)) if metric_logs is not None else False,
+            "tta_fusion": metric_logs.get("tta_fusion", "none") if metric_logs is not None else "none",
         }
         if ema is not None:
             state["model"] = ema.module.state_dict()
