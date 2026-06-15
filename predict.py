@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
+import urllib.request
 from pathlib import Path
+from urllib.parse import urlparse
 
 import torch
 from tqdm import tqdm
@@ -21,6 +24,64 @@ from utils.inference import (
 
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
+
+
+def _resolve_checkpoint_source(checkpoint: str) -> Path:
+    checkpoint_path = Path(checkpoint)
+    if checkpoint_path.exists():
+        return checkpoint_path
+
+    if checkpoint.startswith("hf://"):
+        try:
+            from huggingface_hub import hf_hub_download
+        except ImportError as exc:
+            raise ImportError(
+                "Install huggingface_hub or use a direct HTTPS checkpoint URL: "
+                "pip install huggingface_hub"
+            ) from exc
+
+        parts = checkpoint.removeprefix("hf://").split("/")
+        if len(parts) < 3:
+            raise ValueError("HF checkpoint must look like hf://owner/repo/filename.pth")
+        repo_id = "/".join(parts[:2])
+        filename = "/".join(parts[2:])
+        return Path(hf_hub_download(repo_id=repo_id, filename=filename))
+
+    parsed = urlparse(checkpoint)
+    if parsed.scheme in {"http", "https"}:
+        cache_dir = Path("models") / "hf_cache"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        filename = Path(parsed.path).name or "checkpoint.pth"
+        cached_path = cache_dir / filename
+        if not cached_path.exists():
+            request = urllib.request.Request(checkpoint)
+            token = os.environ.get("HF_TOKEN")
+            if token:
+                request.add_header("Authorization", f"Bearer {token}")
+            with urllib.request.urlopen(request) as response, cached_path.open("wb") as output:
+                while True:
+                    chunk = response.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    output.write(chunk)
+        return cached_path
+
+    raise FileNotFoundError(f"Checkpoint not found: {checkpoint}. Train first or pass --checkpoint.")
+
+
+def resolve_checkpoint(checkpoint: str, fallback: str | None = None) -> Path:
+    candidates = [checkpoint]
+    if fallback:
+        candidates.append(fallback)
+
+    errors = []
+    for candidate in candidates:
+        try:
+            return _resolve_checkpoint_source(candidate)
+        except FileNotFoundError as exc:
+            errors.append(str(exc))
+
+    raise FileNotFoundError("No checkpoint could be loaded. " + " ".join(errors))
 
 
 def parse_args() -> argparse.Namespace:
@@ -64,14 +125,18 @@ def main() -> None:
     cli_quality_score_power = args.quality_score_power
     cli_distribution_quality_power = args.distribution_quality_power
     args = apply_config(args)
+    config = load_config(args.config)
     image_dir = Path(args.image_dir)
-    checkpoint_path = Path(args.checkpoint)
-    if not checkpoint_path.exists():
-        raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}. Train first or pass --checkpoint.")
+    checkpoint_fallback = (
+        os.environ.get("XLA_CHECKPOINT")
+        or os.environ.get("HF_CHECKPOINT")
+        or str(config.get("inference", {}).get("checkpoint_url", "")).strip()
+        or None
+    )
+    checkpoint_path = resolve_checkpoint(args.checkpoint, checkpoint_fallback)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=True)
-    config = load_config(args.config)
     classes = checkpoint.get("classes") or load_classes(args.classes)
     anchors = checkpoint.get("anchors") or get_anchors(config)
     image_size = int(checkpoint.get("image_size", config["image_size"]))

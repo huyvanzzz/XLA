@@ -5,6 +5,10 @@ __pycache__/
 public/
 models/*.pth
 *.pth
+models/*.jsonl
+models/*.csv
+models/*.json
+models/hf_cache/
 
 val_predictions.json
 val_score.json

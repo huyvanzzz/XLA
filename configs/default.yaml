@@ -138,6 +138,7 @@ loss_weights:
   assignment_warmup_epochs: 5
 
 inference:
+  checkpoint_url: "https://huggingface.co/huyvanzzz/xu_ly_anh/resolve/main/best.pth"
   conf_threshold: 0.01
   class_conf_thresholds: {}
   tta_hflip: true

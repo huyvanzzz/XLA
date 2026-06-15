@@ -21,12 +21,14 @@ configs/default.yaml
 The default design follows the research plan:
 
 - `ConvNeXtV2-Nano` pretrained backbone, with stride 8/16/32 feature maps.
-- Fixed `448x448` input for stable P100 throughput.
+- Fixed `448x448` input in the default training config for stable P100 throughput. During inference,
+  `predict.py` reads `image_size` from the checkpoint when available, so the included `models/best.pth`
+  can keep its own validated resolution.
 - Lightweight PAN neck with depthwise convolution and ECA attention.
 - Decoupled anchor-free head. Each location predicts distributed `l,t,r,b` distances and five class-quality logits.
 - No separate objectness branch in the default anchor-free path.
 - Center-prior plus task-aligned top-k assignment.
-- Quality Focal Loss, CIoU, Distribution Focal Loss (`reg_max=8`), and EQL-style class-gradient balancing.
+- Varifocal classification loss, SIoU box loss, Distribution Focal Loss (`reg_max=8`), and EQL-style class-gradient balancing.
 - AMP, `cudnn.benchmark`, pinned memory, persistent workers, EMA, gradual backbone unfreezing, and train-time logging.
 - Validation after each epoch prints overall `mAP@0.5`, per-class `AP@0.5`, precision, recall, prediction count, and GT count.
 
@@ -76,6 +78,45 @@ By default, `predict.py` reads `models/best.pth`. To use another checkpoint:
 python predict.py --image_dir ./public/val/images --output val_predictions.json --checkpoint ./models/best.pth
 ```
 
+To load the checkpoint from Hugging Face instead of storing it locally:
+
+1. Put the checkpoint URL in `configs/default.yaml`:
+
+```yaml
+inference:
+  checkpoint_url: "hf://username/repo-name/best.pth"
+```
+
+2. Run the required inference command normally:
+
+```bash
+python predict.py --image_dir /path/to/images --output predictions.json
+```
+
+You can also override the checkpoint explicitly:
+
+```bash
+python predict.py --image_dir /path/to/images --output predictions.json --checkpoint hf://username/repo-name/best.pth
+```
+
+The same argument also accepts a direct Hugging Face resolve URL:
+
+```bash
+python predict.py --image_dir /path/to/images --output predictions.json --checkpoint https://huggingface.co/username/repo-name/resolve/main/best.pth
+```
+
+For a private Hugging Face repo, set `HF_TOKEN` before running prediction.
+
+To upload `models/best.pth` to Hugging Face:
+
+```bash
+huggingface-cli login
+huggingface-cli upload username/repo-name models/best.pth best.pth --repo-type model
+```
+
+The included checkpoint stores its class list and validated inference metadata, so the required predict
+command does not need a separate `--classes` argument.
+
 The output is a JSON array in the required format. Images with no detections are still emitted with `"boxes": []`.
 
 ## Validate Predictions
@@ -90,7 +131,7 @@ python public/tools/evaluate_predictions.py \
 ## Implementation Notes
 
 - `models/tiny_detector.py` contains the ConvNeXtV2 backbone, necks, and anchor-free head.
-- `utils/loss.py` contains `AnchorFreeLoss`, including task-aligned assignment and Quality Focal Loss.
+- `utils/loss.py` contains `AnchorFreeLoss`, including task-aligned assignment and Varifocal/GFL-style scoring.
 - The anchor-free box regression loss is configurable with `loss_weights.box_loss_type`; the default is SIoU.
 - `utils/inference.py` decodes anchor-free boxes, runs per-class NMS, and fuses horizontal-flip TTA boxes with WBF.
 - `train.py` logs train epoch time separately from validation time, so the 3 minute budget can be checked on Kaggle P100.
