@@ -29,6 +29,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--image_dir", required=True)
     parser.add_argument("--val_image_dir", required=True)
     parser.add_argument("--checkpoint_dir", required=True)
+    parser.add_argument("--resume_checkpoint")
     parser.add_argument("--config", default="configs/default.yaml")
     parser.add_argument("--classes", default="public/classes.json")
     parser.add_argument("--image_size", type=int)
@@ -799,6 +800,17 @@ def main() -> None:
         print(f"scale objectness bias logits: {[round(v, 4) for v in objectness_logits]}")
     if channels_last:
         model = model.to(memory_format=torch.channels_last)
+    if args.resume_checkpoint:
+        resume_path = Path(args.resume_checkpoint)
+        if not resume_path.exists():
+            raise FileNotFoundError(f"Resume checkpoint not found: {resume_path}")
+        checkpoint = torch.load(resume_path, map_location=device, weights_only=True)
+        state_dict = checkpoint.get("model", checkpoint)
+        missing, unexpected = model.load_state_dict(state_dict, strict=False)
+        if missing or unexpected:
+            print(f"resume checkpoint loaded with missing={missing} unexpected={unexpected}")
+        else:
+            print(f"resumed model weights from {resume_path}")
     if str(model_config.get("architecture", "yolo")) == "anchor_free":
         criterion = AnchorFreeLoss(
             image_size=args.image_size,
