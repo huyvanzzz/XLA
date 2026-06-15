@@ -1,12 +1,12 @@
-image_size: 512
+image_size: 544
 preserve_aspect: false
 multi_scale:
   enabled: false
-epochs: 14
-batch_size: 16
-val_batch_size: 32
-lr: 1.5e-05
-lr_final_factor: 0.25
+epochs: 36
+batch_size: 12
+val_batch_size: 24
+lr: 1.2e-05
+lr_final_factor: 0.18
 fine_tune_lr_factor: 1.0
 backbone_lr_mult: 0.05
 weight_decay: 0.008
@@ -15,7 +15,7 @@ channels_last: true
 cudnn_benchmark: true
 seed: 42
 amp: true
-warmup_epochs: 1
+warmup_epochs: 2
 label_smoothing: 0.02
 freeze_backbone_epochs: 1
 backbone_trainable: layer4
@@ -24,7 +24,7 @@ late_backbone:
   start_epoch: 12
   trainable: stage3_tail_layer4
 backbone_freeze_bn: true
-early_stopping_patience: 5
+early_stopping_patience: 12
 validation_loss:
   enabled: false
 augmentation:
@@ -32,16 +32,16 @@ augmentation:
   close_mosaic_epoch: 1
   random_crop_prob: 0.0
   min_crop_scale: 0.85
-  random_scale_prob: 0.0
-  min_scale: 0.85
-  max_scale: 1.15
+  random_scale_prob: 0.08
+  min_scale: 0.95
+  max_scale: 1.05
   random_erasing_prob: 0.0
   random_erasing_min_area: 0.02
   random_erasing_max_area: 0.1
-  color_jitter_prob: 0.08
+  color_jitter_prob: 0.12
   color_jitter_min: 0.92
   color_jitter_max: 1.08
-  close_strong_aug_epoch: 1
+  close_strong_aug_epoch: 28
 model:
   architecture: anchor_free
   backbone: convnextv2_nano
@@ -96,8 +96,8 @@ anchors:
 class_weights:
   enabled: true
   overrides:
-    chair: 1.45
-    car: 1.08
+    chair: 1.55
+    car: 1.12
 class_prior_bias:
   enabled: true
   smoothing: 1.0
@@ -105,9 +105,9 @@ objectness_bias:
   enabled: false
   nominal_objects: 8.0
 balanced_sampling:
-  enabled: false
-  power: 0.5
-  empty_weight: 0.35
+  enabled: true
+  power: 0.35
+  empty_weight: 0.2
 loss_weights:
   box_loss_type: siou
   box_weight: 0.0
